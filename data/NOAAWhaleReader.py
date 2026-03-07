@@ -1,4 +1,4 @@
-from PytorchWildlife.data.annotations import BaseReader, AnnotationCreator
+from PytorchWildlife.data.bioacoustics.bioacoustics_annotations import BaseReader, AnnotationCreator
 from datetime import datetime
 import pandas as pd
 import argparse

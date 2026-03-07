@@ -90,10 +90,10 @@ import soundfile as sf
 
 # Import from PytorchWildlife core library
 from PytorchWildlife.models.bioacoustics import ResNetClassifier, load_model_from_checkpoint
-from PytorchWildlife.data.bioacoustics_datasets import ResizeTo, PerSampleNormalize, BioacousticsInferenceDataset
-from PytorchWildlife.data.bioacoustics_windows import build_inference_windows
-from PytorchWildlife.utils.bioacoustics_configs import load_config
-from PytorchWildlife.data.bioacoustics_spectrograms import compute_mel_spectrograms_gpu
+from PytorchWildlife.data.bioacoustics.bioacoustics_datasets import ResizeTo, PerSampleNormalize, BioacousticsInferenceDataset
+from PytorchWildlife.data.bioacoustics.bioacoustics_windows import build_inference_windows
+from PytorchWildlife.data.bioacoustics.bioacoustics_configs import load_config
+from PytorchWildlife.data.bioacoustics.bioacoustics_spectrograms import compute_mel_spectrograms_gpu
 
 
 def run_inference_batch(

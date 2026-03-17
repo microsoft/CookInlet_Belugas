@@ -1,7 +1,10 @@
 __pycache__/
 data/NOAA_Whales/
 data/mel_spectrograms_multiclass/
+data/splits_binary/
 data/splits_3class/
 data/splits_4class/
-data/splits_binary/
+data/splits_4class_25/
 data/dataset_plots/
+checkpoints/
+configs/

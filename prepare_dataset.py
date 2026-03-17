@@ -459,43 +459,19 @@ def run_spectrograms(config: DomainConfig, windows: List[dict]) -> None:
     print("Spectrogram computation complete!")
 
 
-def run_splits(config: DomainConfig, windows: List[dict]) -> None:
-    """Create grouped train/val/test splits, with optional binary conversion.
-
-    Steps:
-        1. Build a DataFrame from the windows mapping.
-        2. Generate the spectrogram file name expected on disk and filter out
-           windows whose spectrogram has not been computed yet.
-        3. Split into train+val / test (grouped by ``sound_id``), then
-           train / val (stratified + grouped).
-        4. Save CSVs under ``<data_root>/splits/``.
-    """
-    from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
-
-    print(f"\n{'='*60}")
-    print(f"Step: Create Data Splits")
-    print(f"{'='*60}")
-
+def _build_df_from_windows(
+    windows: List[dict],
+    config: DomainConfig,
+) -> pd.DataFrame:
+    """Build a DataFrame from windows, resolve spec names, filter to existing."""
     spectrograms_dir = config.paths.spectrograms_dir
-    output_dir = config.paths.data_root
 
-    print(f"Spectrograms directory: {spectrograms_dir}")
-    print(f"Splits output directory: {output_dir}")
-    print(f"Split parameters:")
-    print(f"  - test_size: {config.splits.test_size}")
-    print(f"  - val_size: {config.splits.val_size}")
-    print(f"  - random_state: {config.splits.random_state}")
-
-    # --- Build DataFrame from windows ---
     df = pd.DataFrame(windows)
 
-    # Load annotations to map sound_id -> file path
     with open(config.paths.annotations_path, 'r') as f:
         annotations = json.load(f)
     sounds = {s['id']: s for s in annotations['sounds']}
 
-    # Build spectrogram file name column
-    # Try standard naming first; fall back to legacy naming per row
     df['sound_filename'] = df['sound_id'].map(
         lambda sid: os.path.splitext(
             os.path.basename(sounds[sid]['file_name_path'])
@@ -503,7 +479,6 @@ def run_splits(config: DomainConfig, windows: List[dict]) -> None:
     )
 
     def _resolve_spec_name(row):
-        """Return the spectrogram filename that exists on disk."""
         standard = f"{row['sound_filename']}_{row['start']}_{row['end']}.npy"
         if os.path.exists(os.path.join(spectrograms_dir, standard)):
             return standard
@@ -513,61 +488,27 @@ def run_splits(config: DomainConfig, windows: List[dict]) -> None:
         )
         if os.path.exists(os.path.join(spectrograms_dir, legacy)):
             return legacy
-        # Default to standard (will be filtered out later)
         return standard
 
     df['spec_name'] = df.apply(_resolve_spec_name, axis=1)
 
-    # Filter to rows where the spectrogram .npy exists on disk
     df['spec_exists'] = df['spec_name'].apply(
         lambda x: os.path.exists(os.path.join(spectrograms_dir, x))
     )
     print(f"\nTotal windows: {len(df)}")
     print(f"Existing spectrograms: {df['spec_exists'].sum()}")
     df = df[df['spec_exists']].drop(columns=['spec_exists'])
+    return df
 
-    if len(df) == 0:
-        print("Error: No spectrograms found. Run 'spectrograms' step first.")
-        return
 
-    # --- Train+Val / Test split (grouped by sound_id) ---
-    gss = GroupShuffleSplit(
-        n_splits=1,
-        test_size=config.splits.test_size,
-        random_state=config.splits.random_state,
-    )
-    trainval_idx, test_idx = next(
-        gss.split(df, df['label'], groups=df['sound_id'])
-    )
-    trainval_df = df.iloc[trainval_idx].copy()
-    test_df = df.iloc[test_idx].copy()
-
-    # --- Train / Val split (stratified + grouped by sound_id) ---
-    sgkf = StratifiedGroupKFold(
-        n_splits=config.splits.n_splits, shuffle=True,
-        random_state=config.splits.random_state,
-    )
-    train_idx, val_idx = next(
-        sgkf.split(trainval_df, trainval_df['label'], trainval_df['sound_id'])
-    )
-    train_df = trainval_df.iloc[train_idx].copy()
-    val_df = trainval_df.iloc[val_idx].copy()
-
-    # --- Save 4-class splits ---
-    splits_dir = os.path.join(output_dir, "splits_4class")
-    os.makedirs(splits_dir, exist_ok=True)
-
-    train_df.to_csv(os.path.join(splits_dir, "train_split.csv"), index=False)
-    val_df.to_csv(os.path.join(splits_dir, "val_split.csv"), index=False)
-    test_df.to_csv(os.path.join(splits_dir, "test_split.csv"), index=False)
-
-    for name, split_df in [('Train', train_df), ('Val', val_df), ('Test', test_df)]:
-        label_counts = split_df['label'].value_counts().to_dict()
-        print(f"  {name:5s} (n={len(split_df)}): {label_counts}")
-
-    print(f"Saved splits to: {splits_dir}")
-
-    # --- Derived splits ---
+def _save_derived_splits(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    output_dir: str,
+    all_labels,
+) -> None:
+    """Save 3-class and binary derived splits from the 4-class splits."""
     # --- 3-class splits: drop noise, remap {1→0, 2→1, 3→2} ---
     three_class_dir = os.path.join(output_dir, "splits_3class")
     os.makedirs(three_class_dir, exist_ok=True)
@@ -583,14 +524,12 @@ def run_splits(config: DomainConfig, windows: List[dict]) -> None:
         )
         label_counts = three_df['label'].value_counts().to_dict()
         print(f"  {name.capitalize():5s} 3-class (n={len(three_df)}): {label_counts}")
-
     print(f"Saved 3-class splits to: {three_class_dir}")
 
     # --- Binary splits: all positive classes → 1 ---
     binary_dir = os.path.join(output_dir, "splits_binary")
     os.makedirs(binary_dir, exist_ok=True)
-
-    positive_classes = [c for c in sorted(df['label'].unique()) if c != 0]
+    positive_classes = [c for c in sorted(all_labels) if c != 0]
     print(f"\nCreating binary splits (positive classes: {positive_classes})")
 
     for name, split_df in [('train', train_df), ('val', val_df), ('test', test_df)]:
@@ -600,8 +539,388 @@ def run_splits(config: DomainConfig, windows: List[dict]) -> None:
         )
         label_counts = binary_df['label'].value_counts().to_dict()
         print(f"  {name.capitalize():5s} binary (n={len(binary_df)}): {label_counts}")
-
     print(f"Saved binary splits to: {binary_dir}")
+
+
+def _save_downsampled_splits(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    output_dir: str,
+    bg_label: int = 0,
+    bg_fraction: float = 0.25,
+    random_state: int = 42,
+) -> None:
+    """Save 4-class splits with background downsampled to ``bg_fraction``.
+
+    For each split the non-background examples are kept as-is.  Background
+    examples are randomly subsampled so that they represent exactly
+    ``bg_fraction`` of the resulting split (e.g. 25 % instead of ~75 %).
+    """
+    folder_name = f"splits_4class_{int(bg_fraction * 100)}"
+    ds_dir = os.path.join(output_dir, folder_name)
+    os.makedirs(ds_dir, exist_ok=True)
+    print(f"\nCreating downsampled 4-class splits "
+          f"(background → {bg_fraction:.0%} of each split)")
+
+    for name, split_df in [('train', train_df), ('val', val_df), ('test', test_df)]:
+        fg = split_df[split_df['label'] != bg_label]
+        bg = split_df[split_df['label'] == bg_label]
+
+        n_fg = len(fg)
+        # bg_fraction = n_bg_keep / (n_fg + n_bg_keep)
+        # => n_bg_keep = n_fg * bg_fraction / (1 - bg_fraction)
+        n_bg_keep = int(n_fg * bg_fraction / (1 - bg_fraction))
+        n_bg_keep = min(n_bg_keep, len(bg))
+
+        bg_sampled = bg.sample(n=n_bg_keep, random_state=random_state)
+        ds_df = pd.concat([fg, bg_sampled]).sample(
+            frac=1, random_state=random_state
+        ).reset_index(drop=True)
+
+        ds_df.to_csv(os.path.join(ds_dir, f"{name}_split.csv"), index=False)
+        label_counts = ds_df['label'].value_counts().to_dict()
+        print(f"  {name.capitalize():5s} (n={len(ds_df)}): {label_counts}")
+
+    print(f"Saved downsampled splits to: {ds_dir}")
+
+
+# Absolute paths to the reference splits used in the PW_Bioacustics project.
+# These are used to align Humpback/Orca/background assignments across projects.
+REF_SPLITS_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "..", "PW_Bioacustics",
+    "data", "NOAA_Whales", "splits_multiclass",
+)
+REF_ANNOTATIONS = os.path.join(
+    os.path.dirname(__file__),
+    "..", "PW_Bioacustics",
+    "data", "NOAA_Whales", "annotations_combined.json",
+)
+
+
+def _load_reference_split_lookup(
+    ref_splits_dir: str,
+    ref_annotations_path: str,
+) -> dict:
+    """Build a ``{match_key: split}`` lookup from reference split CSVs.
+
+    The match key is ``<sound_filename>_<start>_<end>`` which is stable
+    across projects even when ``sound_id`` values differ.
+    """
+    with open(ref_annotations_path, 'r') as f:
+        ref_ann = json.load(f)
+    ref_sid_to_fname = {
+        s['id']: os.path.splitext(os.path.basename(s['file_name_path']))[0]
+        for s in ref_ann['sounds']
+    }
+
+    lookup = {}
+    for split in ('train', 'val', 'test'):
+        ref_df = pd.read_csv(os.path.join(ref_splits_dir, f"{split}_split.csv"))
+        ref_df['sound_filename'] = ref_df['sound_id'].map(ref_sid_to_fname)
+        for _, row in ref_df.iterrows():
+            key = f"{row['sound_filename']}_{row['start']}_{row['end']}"
+            lookup[key] = split
+    return lookup
+
+
+def _distribute_groups_to_fill_gaps(
+    df: pd.DataFrame,
+    targets: dict,
+    group_col: str = 'sound_filename',
+    random_state: int = 42,
+) -> dict:
+    """Greedily assign sound_filename groups to splits to approach target counts.
+
+    Returns a ``{sound_filename: split}`` mapping.
+    """
+    import random
+    rng = random.Random(random_state)
+
+    group_sizes = df.groupby(group_col).size().to_dict()
+    groups = list(group_sizes.keys())
+    rng.shuffle(groups)
+
+    remaining = dict(targets)
+    assignment = {}
+
+    # Sort groups largest-first for better packing
+    groups.sort(key=lambda g: group_sizes[g], reverse=True)
+
+    for g in groups:
+        size = group_sizes[g]
+        # Assign to the split with the largest remaining gap
+        best_split = max(remaining, key=lambda s: remaining[s])
+        assignment[g] = best_split
+        remaining[best_split] -= size
+
+    return assignment
+
+
+def run_splits(config: DomainConfig, windows: List[dict]) -> None:
+    """Create grouped train/val/test splits aligned with reference splits.
+
+    When reference splits are available (REF_SPLITS_DIR), Humpback and Orca
+    positive examples are placed in the same split as the reference.
+    Background examples from shared sound files follow the reference
+    assignment, and the remaining background is distributed to match the
+    reference background counts per split.  Beluga examples (which differ
+    between projects) are split independently using StratifiedGroupKFold.
+
+    Falls back to the standard random splitting when reference splits are
+    not found.
+    """
+    from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
+
+    print(f"\n{'='*60}")
+    print(f"Step: Create Data Splits")
+    print(f"{'='*60}")
+
+    output_dir = config.paths.data_root
+    df = _build_df_from_windows(windows, config)
+
+    if len(df) == 0:
+        print("Error: No spectrograms found. Run 'spectrograms' step first.")
+        return
+
+    # Build match key for every row
+    df['match_key'] = (
+        df['sound_filename'] + '_'
+        + df['start'].astype(str) + '_'
+        + df['end'].astype(str)
+    )
+
+    ref_splits_dir = os.path.normpath(REF_SPLITS_DIR)
+    ref_annotations = os.path.normpath(REF_ANNOTATIONS)
+    use_reference = (
+        os.path.isdir(ref_splits_dir)
+        and os.path.isfile(ref_annotations)
+    )
+
+    if use_reference:
+        print(f"\nAligning splits with reference: {ref_splits_dir}")
+        _run_splits_aligned(df, config, ref_splits_dir, ref_annotations, output_dir)
+    else:
+        print("\nReference splits not found — using random splitting.")
+        _run_splits_random(df, config, output_dir)
+
+
+def _run_splits_aligned(
+    df: pd.DataFrame,
+    config: DomainConfig,
+    ref_splits_dir: str,
+    ref_annotations: str,
+    output_dir: str,
+) -> None:
+    """Split data by aligning with reference Humpback/Orca/background assignments."""
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    ref_lookup = _load_reference_split_lookup(ref_splits_dir, ref_annotations)
+
+    # --- 1. Assign Humpback (label=1) and Orca (label=2) from reference ---
+    hb_orca_mask = df['label'].isin([1, 2])
+    df_hb_orca = df[hb_orca_mask].copy()
+    df_hb_orca['split'] = df_hb_orca['match_key'].map(ref_lookup)
+
+    matched = df_hb_orca['split'].notna().sum()
+    total = len(df_hb_orca)
+    print(f"\nHumpback + Orca: {matched}/{total} matched to reference splits")
+    if matched != total:
+        unmatched = df_hb_orca[df_hb_orca['split'].isna()]
+        print(f"  WARNING: {total - matched} Humpback/Orca windows not found "
+              f"in reference — assigning to train")
+        df_hb_orca.loc[df_hb_orca['split'].isna(), 'split'] = 'train'
+
+    for label, name in [(1, 'Humpback'), (2, 'Orca')]:
+        sub = df_hb_orca[df_hb_orca['label'] == label]
+        counts = sub['split'].value_counts().sort_index().to_dict()
+        print(f"  {name}: {counts}")
+
+    # --- 2. Assign background (label=0) ---
+    bg_mask = df['label'] == 0
+    df_bg = df[bg_mask].copy()
+
+    # 2a. Assign background from sound_filenames present in reference
+    ref_fname_split = {}
+    for key, split in ref_lookup.items():
+        fname = key.rsplit('_', 2)[0]
+        if fname not in ref_fname_split:
+            ref_fname_split[fname] = split
+
+    df_bg['split'] = df_bg['sound_filename'].map(ref_fname_split)
+    known_bg = df_bg[df_bg['split'].notna()]
+    unknown_bg = df_bg[df_bg['split'].isna()]
+
+    known_counts = known_bg['split'].value_counts().sort_index().to_dict()
+    print(f"\nBackground from known sound files: {len(known_bg)} "
+          f"(train={known_counts.get('train',0)}, "
+          f"val={known_counts.get('val',0)}, "
+          f"test={known_counts.get('test',0)})")
+
+    # 2b. Compute target background counts from reference
+    ref_bg_targets = {}
+    for split in ('train', 'val', 'test'):
+        ref_df = pd.read_csv(
+            os.path.join(ref_splits_dir, f"{split}_split.csv")
+        )
+        ref_bg_targets[split] = int((ref_df['label'] == 0).sum())
+
+    gaps = {
+        s: ref_bg_targets[s] - known_counts.get(s, 0)
+        for s in ('train', 'val', 'test')
+    }
+    print(f"Background targets: {ref_bg_targets}")
+    print(f"Gaps to fill: {gaps}  (available: {len(unknown_bg)})")
+
+    # 2c. Distribute unknown background sound_filenames to fill gaps
+    if len(unknown_bg) > 0:
+        group_assignment = _distribute_groups_to_fill_gaps(
+            unknown_bg, gaps,
+            group_col='sound_filename',
+            random_state=config.splits.random_state,
+        )
+        df_bg.loc[unknown_bg.index, 'split'] = (
+            unknown_bg['sound_filename'].map(group_assignment)
+        )
+
+    bg_final = df_bg['split'].value_counts().sort_index().to_dict()
+    print(f"Background final: {bg_final}")
+
+    # --- 3. Split Beluga (label=3) independently ---
+    beluga_mask = df['label'] == 3
+    df_beluga = df[beluga_mask].copy()
+
+    if len(df_beluga) > 0:
+        # Use ref beluga ratios as targets
+        ref_beluga_counts = {}
+        for split in ('train', 'val', 'test'):
+            ref_df = pd.read_csv(
+                os.path.join(ref_splits_dir, f"{split}_split.csv")
+            )
+            ref_beluga_counts[split] = int((ref_df['label'] == 3).sum())
+        ref_beluga_total = sum(ref_beluga_counts.values())
+        beluga_test_ratio = ref_beluga_counts['test'] / ref_beluga_total
+
+        df_beluga['split'] = ''
+
+        from sklearn.model_selection import GroupShuffleSplit
+        gss = GroupShuffleSplit(
+            n_splits=1,
+            test_size=beluga_test_ratio,
+            random_state=config.splits.random_state,
+        )
+        trainval_idx, test_idx = next(
+            gss.split(df_beluga, df_beluga['label'],
+                       groups=df_beluga['sound_filename'])
+        )
+        df_beluga.iloc[test_idx, df_beluga.columns.get_loc('split')] = 'test'
+
+        beluga_trainval = df_beluga.iloc[trainval_idx]
+        sgkf = StratifiedGroupKFold(
+            n_splits=config.splits.n_splits, shuffle=True,
+            random_state=config.splits.random_state,
+        )
+        train_idx, val_idx = next(
+            sgkf.split(beluga_trainval, beluga_trainval['label'],
+                        beluga_trainval['sound_filename'])
+        )
+        df_beluga.iloc[
+            trainval_idx[train_idx],
+            df_beluga.columns.get_loc('split')
+        ] = 'train'
+        df_beluga.iloc[
+            trainval_idx[val_idx],
+            df_beluga.columns.get_loc('split')
+        ] = 'val'
+
+        beluga_counts = df_beluga['split'].value_counts().sort_index().to_dict()
+        print(f"\nBeluga: {beluga_counts}  "
+              f"(ref: {ref_beluga_counts})")
+
+    # --- 4. Combine and save ---
+    all_parts = [df_hb_orca, df_bg, df_beluga] if len(df_beluga) > 0 else [df_hb_orca, df_bg]
+    combined = pd.concat(all_parts)
+
+    train_df = combined[combined['split'] == 'train'].drop(columns=['match_key', 'split'])
+    val_df = combined[combined['split'] == 'val'].drop(columns=['match_key', 'split'])
+    test_df = combined[combined['split'] == 'test'].drop(columns=['match_key', 'split'])
+
+    splits_dir = os.path.join(output_dir, "splits_4class")
+    os.makedirs(splits_dir, exist_ok=True)
+    train_df.to_csv(os.path.join(splits_dir, "train_split.csv"), index=False)
+    val_df.to_csv(os.path.join(splits_dir, "val_split.csv"), index=False)
+    test_df.to_csv(os.path.join(splits_dir, "test_split.csv"), index=False)
+
+    print(f"\n4-class splits:")
+    for name, split_df in [('Train', train_df), ('Val', val_df), ('Test', test_df)]:
+        label_counts = split_df['label'].value_counts().to_dict()
+        print(f"  {name:5s} (n={len(split_df)}): {label_counts}")
+    print(f"Saved splits to: {splits_dir}")
+
+    _save_derived_splits(
+        train_df, val_df, test_df, output_dir,
+        all_labels=sorted(df['label'].unique()),
+    )
+    _save_downsampled_splits(train_df, val_df, test_df, output_dir)
+
+
+def _run_splits_random(
+    df: pd.DataFrame,
+    config: DomainConfig,
+    output_dir: str,
+) -> None:
+    """Original random splitting (fallback when no reference is available)."""
+    from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
+
+    print(f"Split parameters:")
+    print(f"  - test_size: {config.splits.test_size}")
+    print(f"  - val_size: {config.splits.val_size}")
+    print(f"  - random_state: {config.splits.random_state}")
+
+    gss = GroupShuffleSplit(
+        n_splits=1,
+        test_size=config.splits.test_size,
+        random_state=config.splits.random_state,
+    )
+    trainval_idx, test_idx = next(
+        gss.split(df, df['label'], groups=df['sound_id'])
+    )
+    trainval_df = df.iloc[trainval_idx].copy()
+    test_df = df.iloc[test_idx].copy()
+
+    sgkf = StratifiedGroupKFold(
+        n_splits=config.splits.n_splits, shuffle=True,
+        random_state=config.splits.random_state,
+    )
+    train_idx, val_idx = next(
+        sgkf.split(trainval_df, trainval_df['label'], trainval_df['sound_id'])
+    )
+    train_df = trainval_df.iloc[train_idx].copy()
+    val_df = trainval_df.iloc[val_idx].copy()
+
+    # Drop match_key before saving
+    for split_df in (train_df, val_df, test_df):
+        if 'match_key' in split_df.columns:
+            split_df.drop(columns=['match_key'], inplace=True)
+
+    splits_dir = os.path.join(output_dir, "splits_4class")
+    os.makedirs(splits_dir, exist_ok=True)
+    train_df.to_csv(os.path.join(splits_dir, "train_split.csv"), index=False)
+    val_df.to_csv(os.path.join(splits_dir, "val_split.csv"), index=False)
+    test_df.to_csv(os.path.join(splits_dir, "test_split.csv"), index=False)
+
+    print(f"\n4-class splits:")
+    for name, split_df in [('Train', train_df), ('Val', val_df), ('Test', test_df)]:
+        label_counts = split_df['label'].value_counts().to_dict()
+        print(f"  {name:5s} (n={len(split_df)}): {label_counts}")
+    print(f"Saved splits to: {splits_dir}")
+
+    _save_derived_splits(
+        train_df, val_df, test_df, output_dir,
+        all_labels=sorted(df['label'].unique()),
+    )
+    _save_downsampled_splits(train_df, val_df, test_df, output_dir)
 
 
 def _convert_to_binary(

@@ -14,8 +14,8 @@ class_names:
 paths:
   data_root: "./data"
   output_root: "./outputs"
-  spectrograms_dir: "/home/v-druizlopez/v-druizlopez/Bioacoustics/PW_Bioacustics/data/NOAA_Whales/mel_spectrograms_multiclass"
-  windows_json: "/home/v-druizlopez/v-druizlopez/Bioacoustics/CookInlet_Belugas/data/NOAA_Whales/windows_multiclass_from_mels_corrected.json"
+  spectrograms_dir: "./data/mel_spectrograms_multiclass"
+  windows_json: "./data/windows_multiclass_from_mels_corrected.json"
 
 audio:
   sample_rate: 24000

@@ -112,11 +112,11 @@ python train.py --config config_4class_25.yaml \
     --test_csv data/splits_4class_25/test_split.csv
 ```
 
-**Evaluate from a saved checkpoint (no training):**
+### 4. Test Base Models on New Deployment Sites
 
 To evaluate the base models on a new deployment site, run each stage separately and then combine their predictions using `compare_models.py`. The binary model detects whale presence and the 3-class model identifies the species; `compare_models.py` applies the cascade logic and computes final metrics. The `--predict_only` flag skips metric computation and only exports a predictions CSV, which is useful when the test label space differs from the model's label space (e.g., a site with only beluga annotations).
 
-#### Base Models - Tuxedni Channel
+#### Tuxedni Channel
 
 ```bash
 python train.py --config config_binary.yaml --test_csv data/tuxedni_splits/final_test.csv --ckpt_path checkpoints/binary/best.ckpt --spectrograms_dir data/tuxedni_final_test_spectrograms --exp_name tuxedni_final_test --output_csv binary.csv --predict_only
@@ -130,7 +130,7 @@ python train.py --config config_3class.yaml --test_csv data/tuxedni_splits/final
 python compare_models.py --binary_3class_only --pred_binary test_results/tuxedni_final_test/binary.csv --pred_3class test_results/tuxedni_final_test/3class.csv
 ```
 
-#### Base Models - Johnson River
+#### Johnson River
 
 ```bash
 python train.py --config config_binary.yaml --test_csv ./data/johnson_splits/final_test.csv --ckpt_path ./checkpoints/binary/best.ckpt --spectrograms_dir ./data/johnson_final_test_spectrograms --exp_name johnson_final_test --output_csv binary.csv --predict_only
@@ -144,11 +144,11 @@ python train.py --config config_3class.yaml --test_csv ./data/johnson_splits/fin
 python compare_models.py --binary_3class_only --pred_binary ./test_results/johnson_final_test/binary.csv --pred_3class ./test_results/johnson_final_test/3class.csv
 ```
 
-### 4. Active Learning Training
+### 5. Active Learning Training
 
-The active learning loop adapts the base models to new deployment sites using a small set of annotated examples from the target soundscape. Each model is fine-tuned from its base checkpoint, using site-specific training data.
+The active learning loop adapts the base models to new deployment sites using a small set of annotated examples from the target soundscape. These annotations were obtained from the predictions of the base models on each site (Section 4): high-confidence predictions were directly used as labels, while low-confidence predictions were reviewed and manually annotated. Each model is then fine-tuned from its base checkpoint using this site-specific training data.
 
-#### Base Models - Tuxedni Channel
+#### Tuxedni Channel
 
 Fine-tune the binary detector and species classifier on Tuxedni data, then evaluate the adapted cascade:
 
@@ -194,7 +194,7 @@ python compare_models.py --binary_3class_only \
     --pred_3class ./test_results/tuxedni_final_test_finetuned/3class.csv \
 ```
 
-#### Base Models - Johnson River
+#### Johnson River
 
 Same fine-tuning and evaluation workflow applied to the Johnson River deployment:
 
@@ -240,7 +240,9 @@ python compare_models.py --binary_3class_only \
     --pred_3class ./test_results/johnson_final_test_finetuned/3class.csv
 ```
 
-### 5. Inference on Long-Duration Recordings
+### 6. Inference on Unannotated Recordings
+
+Once the models have been fine-tuned to a specific deployment site (Section 5), they can be run on the complete unannotated recordings for that site. The resulting predictions can be analyzed directly to study species occurrence patterns, or a subset of the predictions can be selected and manually verified to serve as training data for a subsequent active learning iteration.
 
 `inference.py` builds sliding windows over raw audio files, computes mel spectrograms on the fly, runs the loaded checkpoint, and exports per-window predictions as a CSV. It supports binary and multiclass modes.
 

@@ -77,6 +77,8 @@ class DataModuleConfig:
     mixup_prob: float
     mixup_alpha: float
     num_classes: Optional[int] = None
+    val_spectrograms_root: Optional[str] = None
+    test_spectrograms_root: Optional[str] = None
     pin_memory: bool = True
     shuffle_train: bool = True
     # Transform params (used only when use_specaug=True)
@@ -128,38 +130,43 @@ class SpectrogramDataModule(pl.LightningDataModule):
             self.train_transform = None
 
     def setup(self, stage: Optional[str] = None):
-        dataset_kwargs = dict(
-            root=self.cfg.spectrograms_root,
+        shared_kwargs = dict(
             x_col=self.cfg.x_col,
             y_col=self.cfg.y_col,
             target_size=self.cfg.target_size,
             normalize=self.cfg.normalize,
         )
         if hasattr(self.cfg, 'pcen'):
-            dataset_kwargs['pcen'] = self.cfg.pcen
+            shared_kwargs['pcen'] = self.cfg.pcen
         if self.cfg.num_classes is not None:
-            dataset_kwargs['num_classes'] = self.cfg.num_classes
+            shared_kwargs['num_classes'] = self.cfg.num_classes
+
+        val_root = self.cfg.val_spectrograms_root or self.cfg.spectrograms_root
+        test_root = self.cfg.test_spectrograms_root or self.cfg.spectrograms_root
 
         if self.cfg.train_csv is not None:
             self.train_ds = BioacousticsDataset(
                 csv_path=self.cfg.train_csv,
+                root=self.cfg.spectrograms_root,
                 transform=self.train_transform,
                 is_training=True,
-                **dataset_kwargs
+                **shared_kwargs
             )
         if self.cfg.val_csv is not None:
             self.val_ds = BioacousticsDataset(
                 csv_path=self.cfg.val_csv,
+                root=val_root,
                 transform=self.eval_transform,
                 is_training=False,
-                **dataset_kwargs
+                **shared_kwargs
             )
         if self.cfg.test_csv is not None:
             self.test_ds = BioacousticsDataset(
                 csv_path=self.cfg.test_csv,
+                root=test_root,
                 transform=self.eval_transform,
                 is_training=False,
-                **dataset_kwargs
+                **shared_kwargs
             )
 
     @property
@@ -218,7 +225,9 @@ class SpectrogramDataModule(pl.LightningDataModule):
 
 
 def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
-          predict_only=False):
+          predict_only=False, spectrograms_dir=None, val_spectrograms_dir=None,
+          test_spectrograms_dir=None, exp_name=None, results_dir="test_results",
+          output_csv=None):
     """Train and evaluate the model.
     
     Args:
@@ -232,11 +241,18 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
     """
     t = cfg.training
 
+    if spectrograms_dir is not None:
+        cfg.paths.spectrograms_dir = spectrograms_dir
+
+    experiment_name = (exp_name or cfg.name) + ("-finetune" if finetune else "")
+
     dm_cfg = DataModuleConfig(
         train_csv=train_csv,
         val_csv=val_csv,
         test_csv=test_csv,
         spectrograms_root=cfg.paths.spectrograms_dir,
+        val_spectrograms_root=val_spectrograms_dir,
+        test_spectrograms_root=test_spectrograms_dir,
         x_col=t.x_col,
         y_col=t.y_col,
         target_size=t.target_size,
@@ -246,7 +262,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         normalize=t.normalize,
         pcen=getattr(t, 'pcen', False),
         num_classes=t.num_classes if t.num_classes != 2 else None,
-        use_mixup=(t.num_classes == 2),
+        use_mixup=getattr(t, 'use_mixup', False),
         mixup_prob=getattr(t, 'mixup_prob', 0.0),
         mixup_alpha=getattr(t, 'mixup_alpha', 0.2),
     )
@@ -279,22 +295,27 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
     monitor_metric = getattr(t, 'monitor_metric', 'val/f1')
     mode = "min" if monitor_metric == "val/loss" else "max"
 
-    experiment_name = cfg.name + ("-finetune" if finetune else "")
+    eval_only = ckpt_path is not None and not finetune
+
     ckpt_dir = os.path.join("checkpoints", experiment_name)
-    os.makedirs(ckpt_dir, exist_ok=True)
+    if not eval_only:
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-    ckpt_cb = ModelCheckpoint(
-        dirpath=ckpt_dir,
-        monitor=monitor_metric,
-        mode=mode,
-        save_top_k=1,
-        save_last=True,
-        filename="best",
-    )
-
-    early_cb = None
-    if not finetune:
-        early_cb = EarlyStopping(monitor=monitor_metric, mode=mode, patience=20)
+    if not eval_only:
+        ckpt_cb = ModelCheckpoint(
+            dirpath=ckpt_dir,
+            monitor=monitor_metric,
+            mode=mode,
+            save_top_k=1,
+            save_last=True,
+            filename="best",
+        )
+        early_cb = None if finetune else EarlyStopping(monitor=monitor_metric, mode=mode, patience=20)
+        trainer_callbacks = [cb for cb in [ckpt_cb, early_cb] if cb is not None]
+    else:
+        ckpt_cb = None
+        early_cb = None
+        trainer_callbacks = []
 
     trainer = pl.Trainer(
         max_epochs=t.epochs,
@@ -303,7 +324,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         precision="16-mixed",
         gradient_clip_val=1.0,
         log_every_n_steps=20,
-        callbacks=[cb for cb in [ckpt_cb, early_cb] if cb is not None],
+        callbacks=trainer_callbacks,
         logger=False,
         enable_progress_bar=True,
     )
@@ -315,6 +336,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         if test_csv is not None:
             model.test_csv_path = test_csv
             model.predictions_dir = ckpt_dir
+            model.predictions_filename = output_csv
             model.predict_only = predict_only
             test_results = trainer.test(model, datamodule=dm, ckpt_path="best")
         else:
@@ -349,6 +371,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
             if test_csv is not None:
                 model.test_csv_path = test_csv
                 model.predictions_dir = ckpt_dir
+                model.predictions_filename = output_csv
                 model.predict_only = predict_only
                 test_results = trainer.test(model, datamodule=dm, ckpt_path='best')
             else:
@@ -356,11 +379,15 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         else:
             if test_csv is None:
                 raise ValueError("--test_csv is required when evaluating from a checkpoint without --finetune")
+            test_out_dir = os.path.join(results_dir, experiment_name)
+            os.makedirs(test_out_dir, exist_ok=True)
             model.test_csv_path = test_csv
-            model.predictions_dir = ckpt_dir
+            model.predictions_dir = test_out_dir
+            model.predictions_filename = output_csv
             model.predict_only = predict_only
             test_results = trainer.test(model, datamodule=dm)
             print(f"Test completed from checkpoint {ckpt_path}")
+            print(f"Results saved to {test_out_dir}")
     
     return test_results[0] if test_results else {}
 
@@ -388,6 +415,19 @@ def main():
                         help="Skip metrics, only export predictions CSV. "
                              "Useful when test labels are in a different "
                              "label space than the model.")
+    parser.add_argument("--spectrograms_dir", type=str, default=None,
+                        help="Override spectrograms_dir from config (applies to train split)")
+    parser.add_argument("--val_spectrograms_dir", type=str, default=None,
+                        help="Override spectrograms_dir for val split (falls back to --spectrograms_dir)")
+    parser.add_argument("--test_spectrograms_dir", type=str, default=None,
+                        help="Override spectrograms_dir for test split (falls back to --spectrograms_dir)")
+    parser.add_argument("--exp_name", type=str, default=None,
+                        help="Override cfg.name for output directory naming")
+    parser.add_argument("--results_dir", type=str, default="test_results",
+                        help="Directory for test-only CSV results (default: test_results)")
+    parser.add_argument("--output_csv", type=str, default=None,
+                        help="Override the output CSV filename (e.g. my_results.csv). "
+                             "If omitted, defaults to <test_csv_basename>_with_predictions.csv")
 
     args = parser.parse_args()
 
@@ -405,6 +445,12 @@ def main():
         ckpt_path=args.ckpt_path,
         finetune=args.finetune,
         predict_only=args.predict_only,
+        spectrograms_dir=args.spectrograms_dir,
+        val_spectrograms_dir=args.val_spectrograms_dir,
+        test_spectrograms_dir=args.test_spectrograms_dir,
+        exp_name=args.exp_name,
+        results_dir=args.results_dir,
+        output_csv=args.output_csv,
     )
 
 

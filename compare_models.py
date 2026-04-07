@@ -33,6 +33,11 @@ Usage:
                    checkpoints/binary/test_split_with_predictions_new.csv \\
         --names old new
 
+    # Binary+3-Class only (no 4-class CSVs needed)
+    python compare_models.py --binary_3class_only \\
+        --pred_binary  checkpoints/binary/test_split_with_predictions.csv \\
+        --pred_3class  checkpoints/3class/test_split_with_predictions.csv
+
     # Save results to CSV
     python compare_models.py --output comparison_results.csv
 """
@@ -154,7 +159,7 @@ def cascade_binary_4class(df: pd.DataFrame) -> np.ndarray:
 # Metrics & display
 # ---------------------------------------------------------------------------
 def compute_metrics(labels: np.ndarray, preds: np.ndarray) -> dict:
-    """Per-class precision / recall / F1."""
+    """Per-class precision / recall / F1 and confusion counts (one-vs-rest)."""
     precision, recall, f1, support = precision_recall_fscore_support(
         labels,
         preds,
@@ -162,7 +167,18 @@ def compute_metrics(labels: np.ndarray, preds: np.ndarray) -> dict:
         average=None,
         zero_division=0,
     )
-    return dict(precision=precision, recall=recall, f1=f1, support=support)
+    n = len(CLASS_NAMES)
+    tp = np.zeros(n, dtype=int)
+    fp = np.zeros(n, dtype=int)
+    fn = np.zeros(n, dtype=int)
+    tn = np.zeros(n, dtype=int)
+    for i in range(n):
+        tp[i] = int(((labels == i) & (preds == i)).sum())
+        fp[i] = int(((labels != i) & (preds == i)).sum())
+        fn[i] = int(((labels == i) & (preds != i)).sum())
+        tn[i] = int(((labels != i) & (preds != i)).sum())
+    return dict(precision=precision, recall=recall, f1=f1, support=support,
+                tp=tp, fp=fp, fn=fn, tn=tn)
 
 
 def build_comparison_df(all_metrics: dict) -> pd.DataFrame:
@@ -238,6 +254,84 @@ def print_comparison(df: pd.DataFrame) -> None:
                 parts.append(f"{row[col]:.4f}".center(val_w))
         print("|".join(parts) + "|")
         print(sep_line.rstrip("+") + "+")
+
+
+# ---------------------------------------------------------------------------
+# Binary+3-Class only
+# ---------------------------------------------------------------------------
+def load_and_merge_b3c(pred_binary: str, pred_3class: str) -> pd.DataFrame:
+    """Load binary and 3-class CSVs and reconstruct 4-class ground truth.
+
+    4-class label reconstruction:
+        binary label = 0  →  label_4class = 0  (No Whale)
+        binary label = 1  →  label_4class = 3-class label + 1
+
+    The 3-class CSV must have been run on the complete test set so that
+    binary false positives are handled by the 3-class model.
+    """
+    df_bin = pd.read_csv(pred_binary)
+    df_3c = pd.read_csv(pred_3class)
+
+    print(f"  Loaded binary  predictions: {len(df_bin):,} rows")
+    print(f"  Loaded 3-class predictions: {len(df_3c):,} rows")
+
+    merged = (
+        df_bin[["spec_name", "label", "prediction"]]
+        .rename(columns={"label": "label_binary", "prediction": "pred_binary"})
+        .merge(
+            df_3c[["spec_name", "prediction"]].rename(columns={"prediction": "pred_3class"}),
+            on="spec_name",
+            how="left",
+        )
+    )
+    merged["pred_3class"] = merged["pred_3class"].fillna(-1).astype(int)
+
+    # Reconstruct 4-class ground truth from binary labels
+    merged["label_4class"] = merged["label_binary"]  # No Whale = 0 stays as-is
+    is_whale = merged["label_binary"] == 1
+    merged.loc[is_whale, "label_4class"] = merged.loc[is_whale, "pred_3class"].clip(lower=0) + 1
+
+    n_missing = (merged["pred_3class"] == -1).sum()
+    if n_missing:
+        print(f"  ⚠  {n_missing:,} samples have no 3-class prediction "
+              f"(not in {pred_3class}).")
+
+    print(f"  Merged samples: {len(merged):,}")
+    return merged
+
+
+def print_single_approach(metrics: dict, approach_name: str) -> None:
+    """Pretty-print metrics for a single approach."""
+    cls_w = max(len(c) for c in CLASS_NAMES) + 2
+    cnt_w = 8   # width for integer count columns
+    val_w = 10  # width for float metric columns
+    n_counts = 4  # FN, FP, TP, TN
+    n_metrics = 3  # Precision, Recall, F1
+    sep_line = ("+" + "-" * cls_w
+                + ("+" + "-" * cnt_w) * n_counts
+                + ("+" + "-" * val_w) * n_metrics + "+")
+
+    print(f"\n{approach_name}")
+    print(sep_line)
+    print("|" + "Class".center(cls_w)
+          + "|" + "FN".center(cnt_w)
+          + "|" + "FP".center(cnt_w)
+          + "|" + "TP".center(cnt_w)
+          + "|" + "TN".center(cnt_w)
+          + "|" + "Precision".center(val_w)
+          + "|" + "Recall".center(val_w)
+          + "|" + "F1".center(val_w) + "|")
+    print(sep_line)
+    for i, cls in enumerate(CLASS_NAMES):
+        print("|" + cls.center(cls_w)
+              + "|" + str(metrics["fn"][i]).center(cnt_w)
+              + "|" + str(metrics["fp"][i]).center(cnt_w)
+              + "|" + str(metrics["tp"][i]).center(cnt_w)
+              + "|" + str(metrics["tn"][i]).center(cnt_w)
+              + "|" + f"{metrics['precision'][i]:.4f}".center(val_w)
+              + "|" + f"{metrics['recall'][i]:.4f}".center(val_w)
+              + "|" + f"{metrics['f1'][i]:.4f}".center(val_w) + "|")
+        print(sep_line)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +467,13 @@ def main():
         help="Display names for --compare CSVs (must match length).",
     )
     parser.add_argument(
+        "--binary_3class_only",
+        action="store_true",
+        help="Evaluate only the Binary+3-Class cascade. "
+             "Requires --pred_binary and --pred_3class; "
+             "--pred_4class and --pred_4class_2stage are ignored.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default=None,
@@ -393,6 +494,25 @@ def main():
 
         print("Comparing experiments …")
         compare_experiments(args.compare, exp_names, output=args.output)
+    elif args.binary_3class_only:
+        # -- Binary+3-Class only mode --
+        print("Loading prediction CSVs …")
+        merged = load_and_merge_b3c(args.pred_binary, args.pred_3class)
+        labels = merged["label_4class"].values
+        preds = cascade_binary_3class(merged)
+        metrics = compute_metrics(labels, preds)
+        print_single_approach(metrics, "Binary+3-Class")
+
+        if args.output:
+            rows = [{"Class": cls,
+                     "FN": metrics["fn"][i], "FP": metrics["fp"][i],
+                     "TP": metrics["tp"][i], "TN": metrics["tn"][i],
+                     "Precision": metrics["precision"][i],
+                     "Recall": metrics["recall"][i], "F1": metrics["f1"][i],
+                     "Support": metrics["support"][i]}
+                    for i, cls in enumerate(CLASS_NAMES)]
+            pd.DataFrame(rows).to_csv(args.output, index=False, float_format="%.4f")
+            print(f"\nResults saved to {args.output}")
     else:
         # -- Cascade comparison mode (original) --
         print("Loading prediction CSVs …")

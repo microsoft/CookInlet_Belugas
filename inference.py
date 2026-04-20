@@ -127,6 +127,7 @@ def run_inference_batch(
     num_classes: int = 2,
     annotations_json: Optional[str] = None,
     device: str = "cuda",
+    conf_threshold: float = 0.5,
     temperature: float = 1.0,
     meta_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, np.ndarray]:
@@ -194,7 +195,7 @@ def run_inference_batch(
     if is_binary:
         scaled_logits = all_logits / temperature
         probabilities = 1 / (1 + np.exp(-scaled_logits))
-        predictions = (probabilities > 0.5).astype(int)
+        predictions = (probabilities > conf_threshold).astype(int)
     else:
         logits_tensor = torch.tensor(all_logits) / temperature
         probabilities = F.softmax(logits_tensor, dim=1).numpy()
@@ -359,6 +360,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--conf_threshold", type=float, default=0.5,
+                        help="Probability threshold for the binary classifier (default 0.5)")
 
     # Output
     parser.add_argument("--dataset", type=str, help="Dataset name for output directory")
@@ -418,6 +421,7 @@ def main():
             num_classes=2,
             device=args.device,
             temperature=args.temperature,
+            conf_threshold=args.conf_threshold,
             meta_df=meta_df,
         )
 
@@ -432,6 +436,7 @@ def main():
             num_classes=3,
             device=args.device,
             temperature=args.temperature,
+            conf_threshold=args.conf_threshold,
             meta_df=meta_df,
         )
 
@@ -610,6 +615,7 @@ def main():
             annotations_json=args.annotations_json,
             device=args.device,
             temperature=args.temperature,
+            conf_threshold=args.conf_threshold,
         )
         print("Inference completed successfully")
     except Exception as e:

@@ -37,11 +37,16 @@ Usage:
 """
 
 import argparse
+import json
+import tempfile
 from dataclasses import dataclass
 from typing import Optional
 import os
 
+import numpy as np
+import pandas as pd
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
@@ -224,10 +229,58 @@ class SpectrogramDataModule(pl.LightningDataModule):
         )
 
 
+def _apply_oversample(train_csv_path: str, oversample: dict, label_col: str = "label") -> str:
+    """Replicate rows per class and write to a temp CSV. Returns new path."""
+    if not oversample:
+        return train_csv_path
+    df = pd.read_csv(train_csv_path)
+    if label_col not in df.columns:
+        return train_csv_path
+    parts = []
+    for cls, mult in oversample.items():
+        cls_int = int(cls)
+        mult = int(mult)
+        rows = df[df[label_col] == cls_int]
+        if len(rows) == 0 or mult <= 0:
+            continue
+        parts.append(pd.concat([rows] * mult, ignore_index=True))
+    others = df[~df[label_col].isin([int(c) for c in oversample.keys()])]
+    if len(others) > 0:
+        parts.append(others)
+    new_df = pd.concat(parts, ignore_index=True).sample(frac=1.0, random_state=42).reset_index(drop=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="oversample_")
+    os.close(fd)
+    new_df.to_csv(tmp_path, index=False)
+    print(f"Oversample applied: {dict((int(k), int(v)) for k,v in oversample.items())} "
+          f"-> {len(df)} -> {len(new_df)} rows; wrote {tmp_path}")
+    return tmp_path
+
+
+def _resolve_class_weights(class_weights_cfg, train_csv_path: str, num_classes: int, label_col: str = "label"):
+    """Resolve class_weights config (None | 'balanced' | list) to a torch tensor or None."""
+    if class_weights_cfg is None or class_weights_cfg == "none":
+        return None
+    if isinstance(class_weights_cfg, str) and class_weights_cfg.lower() == "balanced":
+        df = pd.read_csv(train_csv_path)
+        counts = df[label_col].value_counts().to_dict()
+        total = sum(counts.values())
+        weights = []
+        for c in range(num_classes):
+            n_c = counts.get(c, 0)
+            if n_c == 0:
+                weights.append(1.0)
+            else:
+                weights.append(total / (num_classes * n_c))
+        return torch.tensor(weights, dtype=torch.float32)
+    if isinstance(class_weights_cfg, (list, tuple)):
+        return torch.tensor(list(class_weights_cfg), dtype=torch.float32)
+    raise ValueError(f"Unsupported class_weights: {class_weights_cfg!r}")
+
+
 def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
           predict_only=False, spectrograms_dir=None, val_spectrograms_dir=None,
           test_spectrograms_dir=None, exp_name=None, results_dir="test_results",
-          output_csv=None):
+          output_csv=None, early_stopping=False, es_patience=5):
     """Train and evaluate the model.
     
     Args:
@@ -245,6 +298,10 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         cfg.paths.spectrograms_dir = spectrograms_dir
 
     experiment_name = (exp_name or cfg.name) + ("-finetune" if finetune else "")
+
+    oversample_cfg = getattr(t, 'oversample', None)
+    if oversample_cfg and train_csv is not None:
+        train_csv = _apply_oversample(train_csv, oversample_cfg, label_col=t.y_col)
 
     dm_cfg = DataModuleConfig(
         train_csv=train_csv,
@@ -288,6 +345,21 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         class_names=list(cfg.class_names.values()),
     )
 
+    def _override_criterion(m):
+        pw = getattr(t, 'pos_weight', 1.0)
+        cw_cfg = getattr(t, 'class_weights', None)
+        if m.is_binary:
+            if pw != 1.0:
+                m.criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([float(pw)]))
+                print(f"Binary loss overridden with pos_weight={pw}")
+        else:
+            cw = _resolve_class_weights(cw_cfg, train_csv, num_classes, label_col=t.y_col) if train_csv else None
+            if cw is not None:
+                m.criterion = nn.CrossEntropyLoss(weight=cw, label_smoothing=t.label_smoothing)
+                print(f"Multiclass loss overridden with class_weights={cw.tolist()}")
+
+    _override_criterion(model)
+
     print(f"\nClassification mode: {'Binary' if num_classes == 2 else f'Multiclass ({num_classes} classes)'}")
     print(summary(model, input_size=(t.batch_size, dm.in_channels, *t.target_size)))
 
@@ -310,7 +382,10 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
             save_last=True,
             filename="best",
         )
-        early_cb = None if finetune else EarlyStopping(monitor=monitor_metric, mode=mode, patience=20)
+        if finetune:
+            early_cb = EarlyStopping(monitor=monitor_metric, mode=mode, patience=es_patience) if early_stopping else None
+        else:
+            early_cb = EarlyStopping(monitor=monitor_metric, mode=mode, patience=20)
         trainer_callbacks = [cb for cb in [ckpt_cb, early_cb] if cb is not None]
     else:
         ckpt_cb = None
@@ -342,7 +417,9 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         else:
             test_results = []
     else:
-        model = ResNetClassifier.load_from_checkpoint(ckpt_path)
+        # strict=False tolerates extra buffers like criterion.pos_weight added
+        # when the loss was overridden (BCEWithLogitsLoss(pos_weight=...)).
+        model = ResNetClassifier.load_from_checkpoint(ckpt_path, strict=False)
 
         temperature = getattr(t, 'temperature', 1.0)
         if temperature != 1.0:
@@ -363,6 +440,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
 
             print(f"Finetuning from checkpoint: {ckpt_path}")
             model._apply_freezing_strategy()
+            _override_criterion(model)
 
             trainer.fit(model, datamodule=dm)
             print("Finetune completed.")
@@ -428,6 +506,11 @@ def main():
     parser.add_argument("--output_csv", type=str, default=None,
                         help="Override the output CSV filename (e.g. my_results.csv). "
                              "If omitted, defaults to <test_csv_basename>_with_predictions.csv")
+    parser.add_argument("--early_stopping", action="store_true",
+                        help="Enable EarlyStopping during --finetune "
+                             "(default: off for finetune, on for from-scratch training)")
+    parser.add_argument("--es_patience", type=int, default=5,
+                        help="EarlyStopping patience when --early_stopping is set (default: 5)")
 
     args = parser.parse_args()
 
@@ -436,6 +519,15 @@ def main():
     if not os.path.isabs(config_path) and not os.path.exists(config_path):
         config_path = os.path.join(CONFIGS_DIR, config_path)
     cfg = load_config(config_path)
+
+    # Attach optional extras that TrainingConfig doesn't declare but train() uses.
+    import yaml as _yaml
+    with open(config_path, 'r', encoding='utf-8') as _f:
+        _raw = _yaml.safe_load(_f) or {}
+    _tr_raw = _raw.get('training', {}) or {}
+    for _k in ('class_weights', 'oversample'):
+        if _k in _tr_raw:
+            setattr(cfg.training, _k, _tr_raw[_k])
 
     train(
         cfg=cfg,
@@ -451,6 +543,8 @@ def main():
         exp_name=args.exp_name,
         results_dir=args.results_dir,
         output_csv=args.output_csv,
+        early_stopping=args.early_stopping,
+        es_patience=args.es_patience,
     )
 
 

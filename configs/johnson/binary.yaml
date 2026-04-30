@@ -1,0 +1,36 @@
+name: "johnson_binary"
+
+datasets:
+  - Humpback
+  - Orca
+  - Beluga
+
+class_names:
+  0: "No Whale"
+  1: "Whale"
+
+multiclass: false
+
+paths:
+  data_root: "./data"
+  output_root: "./outputs"
+  spectrograms_dir: "./data/johnson_spectrograms"
+
+training:
+  batch_size: 32
+  num_workers: 4
+  lr: 0.01
+  weight_decay: 0.0001
+  epochs: 50
+  backbone: "resnet18"
+  num_classes: 2
+  label_smoothing: 0.0
+  target_size: [224, 180]
+  x_col: "spec_name"
+  y_col: "label"
+  normalize: true
+  use_specaug: false
+  pos_weight: 1.0
+  conf_threshold: 0.5
+  freeze_backbone: "layer1"
+

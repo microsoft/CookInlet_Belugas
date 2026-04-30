@@ -8,8 +8,14 @@ data/splits_exp1/
 data/splits_exp2/
 data/tuxedni_splits/
 checkpoints/
-configs/
 CLAUDE.md
+
+# Configs: public ones are tracked; experiment-only ones are ignored.
+configs/config_*_exp2.yaml
+configs/tuxedni/4class.yaml
+configs/tuxedni/4class_25.yaml
+configs/tuxedni/round2*.yaml
+configs/sweeps/
 active learning run commands.txt
 data/johnson_splits/
 test_results/

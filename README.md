@@ -78,11 +78,11 @@ data/
 
 ### 3. Train Base Models
 
-All model and training parameters are defined in YAML configs under `configs/`. Only runtime arguments (split paths, checkpoint path) are passed via CLI. Config files can be referenced by filename alone — the script resolves them from the `configs/` directory automatically.
+All model and training parameters are defined in YAML configs under `configs/`. Only runtime arguments (split paths, checkpoint path) are passed via CLI.
 
 ```bash
 # Binary classification — Stage 1 (whale / no-whale), ResNet18
-python train.py --config config_binary.yaml \
+python train.py --config configs/config_binary.yaml \
     --train_csv data/splits_binary/train_split.csv \
     --val_csv data/splits_binary/val_split.csv \
     --test_csv data/splits_binary/test_split.csv
@@ -90,7 +90,7 @@ python train.py --config config_binary.yaml \
 
 ```bash
 # 3-class species classification — Stage 2 (humpback / orca / beluga), ResNet34
-python train.py --config config_3class.yaml \
+python train.py --config configs/config_3class.yaml \
     --train_csv data/splits_3class/train_split.csv \
     --val_csv data/splits_3class/val_split.csv \
     --test_csv data/splits_3class/test_split.csv
@@ -98,7 +98,7 @@ python train.py --config config_3class.yaml \
 
 ```bash
 # 4-class - Stage 1 (no-whale + 3 species), ResNet34
-python train.py --config config_4class_75.yaml \
+python train.py --config configs/config_4class_75.yaml \
     --train_csv data/splits_4class/train_split.csv \
     --val_csv data/splits_4class/val_split.csv \
     --test_csv data/splits_4class/test_split.csv
@@ -106,7 +106,7 @@ python train.py --config config_4class_75.yaml \
 
 ```bash
 # 4-class — Stage 2 (no-whale + 3 species), ResNet34
-python train.py --config config_4class_25.yaml \
+python train.py --config configs/config_4class_25.yaml \
     --train_csv data/splits_4class_25/train_split.csv \
     --val_csv data/splits_4class_25/val_split.csv \
     --test_csv data/splits_4class_25/test_split.csv
@@ -119,29 +119,57 @@ To evaluate the base models on a new deployment site, run each stage separately 
 #### Tuxedni Channel
 
 ```bash
-python train.py --config config_binary.yaml --test_csv data/tuxedni_splits/final_test.csv --ckpt_path checkpoints/binary/best.ckpt --spectrograms_dir data/tuxedni_final_test_spectrograms --exp_name tuxedni_final_test --output_csv binary.csv --predict_only
+python train.py --config configs/config_binary.yaml \
+    --test_csv data/tuxedni_splits/final_test.csv \
+    --ckpt_path checkpoints/binary/best.ckpt \
+    --spectrograms_dir data/tuxedni_final_test_spectrograms \
+    --exp_name tuxedni_final_test \
+    --output_csv binary.csv \
+    --predict_only
 ```
 
 ```bash
-python train.py --config config_3class.yaml --test_csv data/tuxedni_splits/final_test.csv --ckpt_path checkpoints/3class/best.ckpt --spectrograms_dir data/tuxedni_final_test_spectrograms --exp_name tuxedni_final_test --output_csv 3class.csv --predict_only
+python train.py --config configs/config_3class.yaml \
+    --test_csv data/tuxedni_splits/final_test.csv \
+    --ckpt_path checkpoints/3class/best.ckpt \
+    --spectrograms_dir data/tuxedni_final_test_spectrograms \
+    --exp_name tuxedni_final_test \
+    --output_csv 3class.csv \
+    --predict_only
 ```
 
 ```bash
-python compare_models.py --binary_3class_only --pred_binary test_results/tuxedni_final_test/binary.csv --pred_3class test_results/tuxedni_final_test/3class.csv
+python compare_models.py --binary_3class_only \
+    --pred_binary test_results/tuxedni_final_test/binary.csv \
+    --pred_3class test_results/tuxedni_final_test/3class.csv
 ```
 
 #### Johnson River
 
 ```bash
-python train.py --config config_binary.yaml --test_csv ./data/johnson_splits/final_test.csv --ckpt_path ./checkpoints/binary/best.ckpt --spectrograms_dir ./data/johnson_final_test_spectrograms --exp_name johnson_final_test --output_csv binary.csv --predict_only
+python train.py --config configs/config_binary.yaml \
+    --test_csv data/johnson_splits/final_test.csv \
+    --ckpt_path checkpoints/binary/best.ckpt \
+    --spectrograms_dir data/johnson_final_test_spectrograms \
+    --exp_name johnson_final_test \
+    --output_csv binary.csv \
+    --predict_only
 ```
 
 ```bash
-python train.py --config config_3class.yaml --test_csv ./data/johnson_splits/final_test.csv --ckpt_path ./checkpoints/3class/best.ckpt --spectrograms_dir ./data/johnson_final_test_spectrograms --exp_name johnson_final_test --output_csv 3class.csv --predict_only
+python train.py --config configs/config_3class.yaml \
+    --test_csv data/johnson_splits/final_test.csv \
+    --ckpt_path checkpoints/3class/best.ckpt \
+    --spectrograms_dir data/johnson_final_test_spectrograms \
+    --exp_name johnson_final_test \
+    --output_csv 3class.csv \
+    --predict_only
 ```
 
 ```bash
-python compare_models.py --binary_3class_only --pred_binary ./test_results/johnson_final_test/binary.csv --pred_3class ./test_results/johnson_final_test/3class.csv
+python compare_models.py --binary_3class_only \
+    --pred_binary test_results/johnson_final_test/binary.csv \
+    --pred_3class test_results/johnson_final_test/3class.csv
 ```
 
 ### 5. Active Learning Training
@@ -156,15 +184,15 @@ Fine-tune the binary detector and species classifier on Tuxedni data, then evalu
 python train.py --config configs/tuxedni/binary.yaml \
     --train_csv data/tuxedni_splits/train_binary.csv \
     --val_csv data/tuxedni_splits/val_binary.csv \
-    --ckpt_path ./checkpoints/binary/best.ckpt \
+    --ckpt_path checkpoints/binary/best.ckpt \
     --finetune
 ```
 
 ```bash
-python train.py --config config_binary.yaml \
+python train.py --config configs/config_binary.yaml \
     --ckpt_path checkpoints/tuxedni_binary-finetune/best.ckpt \
     --test_csv data/tuxedni_splits/final_test.csv \
-    --spectrograms_dir ./data/tuxedni_final_test_spectrograms \
+    --spectrograms_dir data/tuxedni_final_test_spectrograms \
     --exp_name tuxedni_final_test_finetuned \
     --output_csv binary.csv \
     --predict_only
@@ -174,15 +202,15 @@ python train.py --config config_binary.yaml \
 python train.py --config configs/tuxedni/3class.yaml \
     --train_csv data/tuxedni_splits/train_3class.csv \
     --val_csv data/tuxedni_splits/val_3class.csv \
-    --ckpt_path ./checkpoints/3class/best.ckpt \
+    --ckpt_path checkpoints/3class/best.ckpt \
     --finetune
 ```
 
 ```bash
-python train.py --config config_3class.yaml \
-    --ckpt_path ./checkpoints/tuxedni_3class-finetune/best.ckpt \
-    --test_csv ./data/tuxedni_splits/final_test.csv \
-    --spectrograms_dir ./data/tuxedni_final_test_spectrograms \
+python train.py --config configs/config_3class.yaml \
+    --ckpt_path checkpoints/tuxedni_3class-finetune/best.ckpt \
+    --test_csv data/tuxedni_splits/final_test.csv \
+    --spectrograms_dir data/tuxedni_final_test_spectrograms \
     --exp_name tuxedni_final_test_finetuned \
     --output_csv 3class.csv \
     --predict_only
@@ -190,8 +218,8 @@ python train.py --config config_3class.yaml \
 
 ```bash
 python compare_models.py --binary_3class_only \
-    --pred_binary ./test_results/tuxedni_final_test_finetuned/binary.csv \
-    --pred_3class ./test_results/tuxedni_final_test_finetuned/3class.csv \
+    --pred_binary test_results/tuxedni_final_test_finetuned/binary.csv \
+    --pred_3class test_results/tuxedni_final_test_finetuned/3class.csv
 ```
 
 #### Johnson River
@@ -202,15 +230,15 @@ Same fine-tuning and evaluation workflow applied to the Johnson River deployment
 python train.py --config configs/johnson/binary.yaml \
     --train_csv data/johnson_splits/train_binary.csv \
     --val_csv data/johnson_splits/val_binary.csv \
-    --ckpt_path ./checkpoints/binary/best.ckpt \
+    --ckpt_path checkpoints/binary/best.ckpt \
     --finetune
 ```
 
 ```bash
-python train.py --config config_binary.yaml \
+python train.py --config configs/config_binary.yaml \
     --ckpt_path checkpoints/johnson_binary-finetune/best.ckpt \
     --test_csv data/johnson_splits/final_test.csv \
-    --spectrograms_dir ./data/johnson_final_test_spectrograms \
+    --spectrograms_dir data/johnson_final_test_spectrograms \
     --exp_name johnson_final_test_finetuned \
     --output_csv binary.csv \
     --predict_only
@@ -220,24 +248,24 @@ python train.py --config config_binary.yaml \
 python train.py --config configs/johnson/3class.yaml \
     --train_csv data/johnson_splits/train_3class.csv \
     --val_csv data/johnson_splits/val_3class.csv \
-    --ckpt_path ./checkpoints/3class/best.ckpt \
+    --ckpt_path checkpoints/3class/best.ckpt \
     --finetune
 ```
 
 ```bash
-python train.py --config config_3class.yaml \
-    --ckpt_path ./checkpoints/johnson_3class-finetune/best.ckpt \ 
-    --test_csv ./data/johnson_splits/final_test.csv \
-    --spectrograms_dir ./data/johnson_final_test_spectrograms \
+python train.py --config configs/config_3class.yaml \
+    --ckpt_path checkpoints/johnson_3class-finetune/best.ckpt \
+    --test_csv data/johnson_splits/final_test.csv \
+    --spectrograms_dir data/johnson_final_test_spectrograms \
     --exp_name johnson_final_test_finetuned \
     --output_csv 3class.csv \
-    --predict_only 
+    --predict_only
 ```
 
 ```bash
 python compare_models.py --binary_3class_only \
-    --pred_binary ./test_results/johnson_final_test_finetuned/binary.csv \
-    --pred_3class ./test_results/johnson_final_test_finetuned/3class.csv
+    --pred_binary test_results/johnson_final_test_finetuned/binary.csv \
+    --pred_3class test_results/johnson_final_test_finetuned/3class.csv
 ```
 
 ### 6. Inference on Unannotated Recordings
@@ -253,11 +281,11 @@ Once the models have been fine-tuned to a specific deployment site (Section 5), 
 - **CSV file**: loads windows from a CSV with spectrogram paths
 
 ```bash
-python inference.py --spectrograms_dir data/tuxedni_spectrograms 
+python inference.py --config data/data_config.yaml \
+    --spectrograms_dir data/tuxedni_spectrograms \
     --checkpoint_binary checkpoints/tuxedni_binary-finetune/best.ckpt \
     --checkpoint_3class checkpoints/tuxedni_3class-finetune/best.ckpt \
     --output_csv inference/tuxedni_results.csv \
-    --sample_rate 24000 \
     --target_size 224 180 \
     --dataset tuxedni \
     --temperature 3 \
@@ -265,10 +293,11 @@ python inference.py --spectrograms_dir data/tuxedni_spectrograms
 ```
 
 ```bash
-python inference.py --spectrograms_dir data/johnson_spectrograms \
-    --checkpoint_binary checkpoints/johnson_binary-finetune/best.ckpt \ --checkpoint_3class checkpoints/johnson_3class-finetune/best.ckpt \
+python inference.py --config data/data_config.yaml \
+    --spectrograms_dir data/johnson_spectrograms \
+    --checkpoint_binary checkpoints/johnson_binary-finetune/best.ckpt \
+    --checkpoint_3class checkpoints/johnson_3class-finetune/best.ckpt \
     --output_csv inference/johnson_results.csv \
-    --sample_rate 24000 \
     --target_size 224 180 \
     --dataset johnson \
     --temperature 3 \

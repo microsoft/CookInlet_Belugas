@@ -1,0 +1,36 @@
+name: "4class_25"
+
+datasets:
+  - Humpback
+  - Orca
+  - Beluga
+
+class_names:
+  0: "No Whale"
+  1: "Humpback"
+  2: "Orca"
+  3: "Beluga"
+
+multiclass: true
+
+paths:
+  data_root: "./data"
+  output_root: "./outputs"
+  spectrograms_dir: "./data/mel_spectrograms_multiclass"
+
+training:
+  batch_size: 32
+  num_workers: 4
+  lr: 0.000288
+  weight_decay: 0.0001
+  epochs: 50
+  backbone: "resnet34"
+  num_classes: 4
+  label_smoothing: 0.0
+  target_size: [224, 180]
+  x_col: "spec_name"
+  y_col: "label"
+  normalize: true
+  use_specaug: false
+  pos_weight: 1.0
+  conf_threshold: 0.5

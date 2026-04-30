@@ -1,0 +1,36 @@
+name: "johnson_3class"
+
+datasets:
+  - Humpback
+  - Orca
+  - Beluga
+
+class_names:
+  0: "Humpback"
+  1: "Orca"
+  2: "Beluga"
+
+multiclass: true
+
+paths:
+  data_root: "./data"
+  output_root: "./outputs"
+  spectrograms_dir: "./data/johnson_spectrograms"
+
+training:
+  batch_size: 32
+  num_workers: 4
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 5
+  backbone: "resnet34"
+  num_classes: 3
+  label_smoothing: 0.0
+  target_size: [224, 180]
+  x_col: "spec_name"
+  y_col: "label"
+  normalize: true
+  use_specaug: false
+  pos_weight: 1.0
+  conf_threshold: 0.5
+  freeze_backbone: "layer1"

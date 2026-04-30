@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated paper."
+title: "Adaptive acoustic monitoring for endangered Cook Inlet beluga whales in complex soundscapes"
+authors:
+  - family-names: Castellote
+    given-names: Manuel
+  - family-names: Dodhia
+    given-names: Rahul
+  - family-names: Ruiz
+    given-names: Daniela
+  - family-names: Miao
+    given-names: Zhongqi
+  - family-names: Arbelaez
+    given-names: Pablo
+  - family-names: Gill
+    given-names: Verena
+  - family-names: Polasek
+    given-names: Lori
+  - family-names: Lavista Ferres
+    given-names: Juan M.
+license: MIT
+repository-code: "https://github.com/danielaruizl1/CookInlet_Belugas"
+preferred-citation:
+  type: article
+  title: "Adaptive acoustic monitoring for endangered Cook Inlet beluga whales in complex soundscapes"
+  authors:
+    - family-names: Castellote
+      given-names: Manuel
+    - family-names: Dodhia
+      given-names: Rahul
+    - family-names: Ruiz
+      given-names: Daniela
+    - family-names: Miao
+      given-names: Zhongqi
+    - family-names: Arbelaez
+      given-names: Pablo
+    - family-names: Gill
+      given-names: Verena
+    - family-names: Polasek
+      given-names: Lori
+    - family-names: Lavista Ferres
+      given-names: Juan M.
+  journal: "Marine Mammal Science"
+  year: 2026

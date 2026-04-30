@@ -6,44 +6,41 @@ Only runtime arguments (split paths, checkpoint) are passed via CLI.
 
 Usage:
     # Train binary from scratch
-    python train.py --config config_binary.yaml \\
+    python train.py --config configs/config_binary.yaml \\
         --train_csv data/splits_binary/train_split.csv \\
         --val_csv data/splits_binary/val_split.csv \\
         --test_csv data/splits_binary/test_split.csv
 
     # Train 3-class from scratch
-    python train.py --config config_3class.yaml \\
+    python train.py --config configs/config_3class.yaml \\
         --train_csv data/splits_3class/train_split.csv \\
         --val_csv data/splits_3class/val_split.csv \\
         --test_csv data/splits_3class/test_split.csv
 
     # Train 4-class from scratch
-    python train.py --config config_4class.yaml \\
+    python train.py --config configs/config_4class_75.yaml \\
         --train_csv data/splits_4class/train_split.csv \\
         --val_csv data/splits_4class/val_split.csv \\
         --test_csv data/splits_4class/test_split.csv
 
     # Evaluate binary from checkpoint
-    python train.py --config config_binary.yaml \\
+    python train.py --config configs/config_binary.yaml \\
         --test_csv data/splits_binary/test_split.csv \\
         --ckpt_path checkpoints/binary/best.ckpt
 
-    # Finetune binary from checkpoint
-    python train.py --config config_binary.yaml \\
-        --train_csv data/splits_binary/train_split.csv \\
-        --val_csv data/splits_binary/val_split.csv \\
-        --test_csv data/splits_binary/test_split.csv \\
+    # Finetune binary from a base checkpoint
+    python train.py --config configs/tuxedni/binary.yaml \\
+        --train_csv data/tuxedni_splits/train_binary.csv \\
+        --val_csv data/tuxedni_splits/val_binary.csv \\
         --ckpt_path checkpoints/binary/best.ckpt --finetune
 """
 
 import argparse
-import json
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
 import os
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -66,6 +63,7 @@ from PytorchWildlife.data.bioacoustics.bioacoustics_configs import load_config
 @dataclass
 class DataModuleConfig:
     """Configuration for the SpectrogramDataModule."""
+
     train_csv: Optional[str]
     val_csv: Optional[str]
     test_csv: Optional[str]
@@ -141,10 +139,10 @@ class SpectrogramDataModule(pl.LightningDataModule):
             target_size=self.cfg.target_size,
             normalize=self.cfg.normalize,
         )
-        if hasattr(self.cfg, 'pcen'):
-            shared_kwargs['pcen'] = self.cfg.pcen
+        if hasattr(self.cfg, "pcen"):
+            shared_kwargs["pcen"] = self.cfg.pcen
         if self.cfg.num_classes is not None:
-            shared_kwargs['num_classes'] = self.cfg.num_classes
+            shared_kwargs["num_classes"] = self.cfg.num_classes
 
         val_root = self.cfg.val_spectrograms_root or self.cfg.spectrograms_root
         test_root = self.cfg.test_spectrograms_root or self.cfg.spectrograms_root
@@ -155,7 +153,7 @@ class SpectrogramDataModule(pl.LightningDataModule):
                 root=self.cfg.spectrograms_root,
                 transform=self.train_transform,
                 is_training=True,
-                **shared_kwargs
+                **shared_kwargs,
             )
         if self.cfg.val_csv is not None:
             self.val_ds = BioacousticsDataset(
@@ -163,7 +161,7 @@ class SpectrogramDataModule(pl.LightningDataModule):
                 root=val_root,
                 transform=self.eval_transform,
                 is_training=False,
-                **shared_kwargs
+                **shared_kwargs,
             )
         if self.cfg.test_csv is not None:
             self.test_ds = BioacousticsDataset(
@@ -171,7 +169,7 @@ class SpectrogramDataModule(pl.LightningDataModule):
                 root=test_root,
                 transform=self.eval_transform,
                 is_training=False,
-                **shared_kwargs
+                **shared_kwargs,
             )
 
     @property
@@ -194,8 +192,7 @@ class SpectrogramDataModule(pl.LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         if self.is_binary and self.cfg.use_mixup:
             collate_fn = MixUpCollator(
-                mixup_prob=self.cfg.mixup_prob,
-                mixup_alpha=self.cfg.mixup_alpha
+                mixup_prob=self.cfg.mixup_prob, mixup_alpha=self.cfg.mixup_alpha
             )
         else:
             collate_fn = None
@@ -229,7 +226,9 @@ class SpectrogramDataModule(pl.LightningDataModule):
         )
 
 
-def _apply_oversample(train_csv_path: str, oversample: dict, label_col: str = "label") -> str:
+def _apply_oversample(
+    train_csv_path: str, oversample: dict, label_col: str = "label"
+) -> str:
     """Replicate rows per class and write to a temp CSV. Returns new path."""
     if not oversample:
         return train_csv_path
@@ -247,16 +246,24 @@ def _apply_oversample(train_csv_path: str, oversample: dict, label_col: str = "l
     others = df[~df[label_col].isin([int(c) for c in oversample.keys()])]
     if len(others) > 0:
         parts.append(others)
-    new_df = pd.concat(parts, ignore_index=True).sample(frac=1.0, random_state=42).reset_index(drop=True)
+    new_df = (
+        pd.concat(parts, ignore_index=True)
+        .sample(frac=1.0, random_state=42)
+        .reset_index(drop=True)
+    )
     fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="oversample_")
     os.close(fd)
     new_df.to_csv(tmp_path, index=False)
-    print(f"Oversample applied: {dict((int(k), int(v)) for k,v in oversample.items())} "
-          f"-> {len(df)} -> {len(new_df)} rows; wrote {tmp_path}")
+    print(
+        f"Oversample applied: {dict((int(k), int(v)) for k, v in oversample.items())} "
+        f"-> {len(df)} -> {len(new_df)} rows; wrote {tmp_path}"
+    )
     return tmp_path
 
 
-def _resolve_class_weights(class_weights_cfg, train_csv_path: str, num_classes: int, label_col: str = "label"):
+def _resolve_class_weights(
+    class_weights_cfg, train_csv_path: str, num_classes: int, label_col: str = "label"
+):
     """Resolve class_weights config (None | 'balanced' | list) to a torch tensor or None."""
     if class_weights_cfg is None or class_weights_cfg == "none":
         return None
@@ -277,12 +284,25 @@ def _resolve_class_weights(class_weights_cfg, train_csv_path: str, num_classes: 
     raise ValueError(f"Unsupported class_weights: {class_weights_cfg!r}")
 
 
-def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
-          predict_only=False, spectrograms_dir=None, val_spectrograms_dir=None,
-          test_spectrograms_dir=None, exp_name=None, results_dir="test_results",
-          output_csv=None, early_stopping=False, es_patience=5):
+def train(
+    cfg,
+    train_csv,
+    val_csv,
+    test_csv,
+    ckpt_path=None,
+    finetune=False,
+    predict_only=False,
+    spectrograms_dir=None,
+    val_spectrograms_dir=None,
+    test_spectrograms_dir=None,
+    exp_name=None,
+    results_dir="test_results",
+    output_csv=None,
+    early_stopping=False,
+    es_patience=5,
+):
     """Train and evaluate the model.
-    
+
     Args:
         cfg: DomainConfig loaded from YAML.
         train_csv: Path to training split CSV.
@@ -299,7 +319,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
 
     experiment_name = (exp_name or cfg.name) + ("-finetune" if finetune else "")
 
-    oversample_cfg = getattr(t, 'oversample', None)
+    oversample_cfg = getattr(t, "oversample", None)
     if oversample_cfg and train_csv is not None:
         train_csv = _apply_oversample(train_csv, oversample_cfg, label_col=t.y_col)
 
@@ -317,11 +337,11 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         num_workers=t.num_workers,
         use_specaug=t.use_specaug,
         normalize=t.normalize,
-        pcen=getattr(t, 'pcen', False),
+        pcen=getattr(t, "pcen", False),
         num_classes=t.num_classes if t.num_classes != 2 else None,
-        use_mixup=getattr(t, 'use_mixup', False),
-        mixup_prob=getattr(t, 'mixup_prob', 0.0),
-        mixup_alpha=getattr(t, 'mixup_alpha', 0.2),
+        use_mixup=getattr(t, "use_mixup", False),
+        mixup_prob=getattr(t, "mixup_prob", 0.0),
+        mixup_alpha=getattr(t, "mixup_alpha", 0.2),
     )
 
     dm = SpectrogramDataModule(dm_cfg)
@@ -340,31 +360,41 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         batch_size=t.batch_size,
         pos_weight=t.pos_weight,
         conf_threshold=t.conf_threshold,
-        freeze_backbone=getattr(t, 'freeze_backbone', 'none'),
-        backbone_lr_ratio=getattr(t, 'backbone_lr_ratio', 1.0),
+        freeze_backbone=getattr(t, "freeze_backbone", "none"),
+        backbone_lr_ratio=getattr(t, "backbone_lr_ratio", 1.0),
         class_names=list(cfg.class_names.values()),
     )
 
     def _override_criterion(m):
-        pw = getattr(t, 'pos_weight', 1.0)
-        cw_cfg = getattr(t, 'class_weights', None)
+        pw = getattr(t, "pos_weight", 1.0)
+        cw_cfg = getattr(t, "class_weights", None)
         if m.is_binary:
             if pw != 1.0:
                 m.criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([float(pw)]))
                 print(f"Binary loss overridden with pos_weight={pw}")
         else:
-            cw = _resolve_class_weights(cw_cfg, train_csv, num_classes, label_col=t.y_col) if train_csv else None
+            cw = (
+                _resolve_class_weights(
+                    cw_cfg, train_csv, num_classes, label_col=t.y_col
+                )
+                if train_csv
+                else None
+            )
             if cw is not None:
-                m.criterion = nn.CrossEntropyLoss(weight=cw, label_smoothing=t.label_smoothing)
+                m.criterion = nn.CrossEntropyLoss(
+                    weight=cw, label_smoothing=t.label_smoothing
+                )
                 print(f"Multiclass loss overridden with class_weights={cw.tolist()}")
 
     _override_criterion(model)
 
-    print(f"\nClassification mode: {'Binary' if num_classes == 2 else f'Multiclass ({num_classes} classes)'}")
+    print(
+        f"\nClassification mode: {'Binary' if num_classes == 2 else f'Multiclass ({num_classes} classes)'}"
+    )
     print(summary(model, input_size=(t.batch_size, dm.in_channels, *t.target_size)))
 
     # Callbacks & logging
-    monitor_metric = getattr(t, 'monitor_metric', 'val/f1')
+    monitor_metric = getattr(t, "monitor_metric", "val/f1")
     mode = "min" if monitor_metric == "val/loss" else "max"
 
     eval_only = ckpt_path is not None and not finetune
@@ -383,7 +413,11 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
             filename="best",
         )
         if finetune:
-            early_cb = EarlyStopping(monitor=monitor_metric, mode=mode, patience=es_patience) if early_stopping else None
+            early_cb = (
+                EarlyStopping(monitor=monitor_metric, mode=mode, patience=es_patience)
+                if early_stopping
+                else None
+            )
         else:
             early_cb = EarlyStopping(monitor=monitor_metric, mode=mode, patience=20)
         trainer_callbacks = [cb for cb in [ckpt_cb, early_cb] if cb is not None]
@@ -392,11 +426,17 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         early_cb = None
         trainer_callbacks = []
 
+    if torch.cuda.is_available():
+        accelerator, devices, precision = "gpu", [0], "16-mixed"
+    else:
+        print("CUDA not available, falling back to CPU (precision=32-true)")
+        accelerator, devices, precision = "cpu", 1, "32-true"
+
     trainer = pl.Trainer(
         max_epochs=t.epochs,
-        accelerator="gpu",
-        devices=[0],
-        precision="16-mixed",
+        accelerator=accelerator,
+        devices=devices,
+        precision=precision,
         gradient_clip_val=1.0,
         log_every_n_steps=20,
         callbacks=trainer_callbacks,
@@ -421,7 +461,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
         # when the loss was overridden (BCEWithLogitsLoss(pos_weight=...)).
         model = ResNetClassifier.load_from_checkpoint(ckpt_path, strict=False)
 
-        temperature = getattr(t, 'temperature', 1.0)
+        temperature = getattr(t, "temperature", 1.0)
         if temperature != 1.0:
             model.temperature = torch.tensor(temperature, device=model.device)
             print(f"Using manual temperature: {temperature}")
@@ -435,8 +475,8 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
             model.hparams.label_smoothing = t.label_smoothing
             model.hparams.T_max = t.epochs
             model.hparams.batch_size = t.batch_size
-            model.hparams.freeze_backbone = getattr(t, 'freeze_backbone', 'none')
-            model.hparams.backbone_lr_ratio = getattr(t, 'backbone_lr_ratio', 1.0)
+            model.hparams.freeze_backbone = getattr(t, "freeze_backbone", "none")
+            model.hparams.backbone_lr_ratio = getattr(t, "backbone_lr_ratio", 1.0)
 
             print(f"Finetuning from checkpoint: {ckpt_path}")
             model._apply_freezing_strategy()
@@ -451,12 +491,14 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
                 model.predictions_dir = ckpt_dir
                 model.predictions_filename = output_csv
                 model.predict_only = predict_only
-                test_results = trainer.test(model, datamodule=dm, ckpt_path='best')
+                test_results = trainer.test(model, datamodule=dm, ckpt_path="best")
             else:
                 test_results = []
         else:
             if test_csv is None:
-                raise ValueError("--test_csv is required when evaluating from a checkpoint without --finetune")
+                raise ValueError(
+                    "--test_csv is required when evaluating from a checkpoint without --finetune"
+                )
             test_out_dir = os.path.join(results_dir, experiment_name)
             os.makedirs(test_out_dir, exist_ok=True)
             model.test_csv_path = test_csv
@@ -466,7 +508,7 @@ def train(cfg, train_csv, val_csv, test_csv, ckpt_path=None, finetune=False,
             test_results = trainer.test(model, datamodule=dm)
             print(f"Test completed from checkpoint {ckpt_path}")
             print(f"Results saved to {test_out_dir}")
-    
+
     return test_results[0] if test_results else {}
 
 
@@ -475,42 +517,87 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Training for bioacoustics classification. "
-                    "All model/training params come from the YAML config."
+        "All model/training params come from the YAML config."
     )
-    parser.add_argument("--config", type=str, required=True,
-                        help="Path to YAML config file")
-    parser.add_argument("--train_csv", type=str, default=None,
-                        help="Path to training split CSV")
-    parser.add_argument("--val_csv", type=str, default=None,
-                        help="Path to validation split CSV")
-    parser.add_argument("--test_csv", type=str, default=None,
-                        help="Path to test split CSV (optional; if omitted, testing is skipped)")
-    parser.add_argument("--ckpt_path", type=str, default=None,
-                        help="Checkpoint to resume/evaluate from")
-    parser.add_argument("--finetune", action="store_true",
-                        help="Finetune from --ckpt_path instead of evaluating")
-    parser.add_argument("--predict_only", action="store_true",
-                        help="Skip metrics, only export predictions CSV. "
-                             "Useful when test labels are in a different "
-                             "label space than the model.")
-    parser.add_argument("--spectrograms_dir", type=str, default=None,
-                        help="Override spectrograms_dir from config (applies to train split)")
-    parser.add_argument("--val_spectrograms_dir", type=str, default=None,
-                        help="Override spectrograms_dir for val split (falls back to --spectrograms_dir)")
-    parser.add_argument("--test_spectrograms_dir", type=str, default=None,
-                        help="Override spectrograms_dir for test split (falls back to --spectrograms_dir)")
-    parser.add_argument("--exp_name", type=str, default=None,
-                        help="Override cfg.name for output directory naming")
-    parser.add_argument("--results_dir", type=str, default="test_results",
-                        help="Directory for test-only CSV results (default: test_results)")
-    parser.add_argument("--output_csv", type=str, default=None,
-                        help="Override the output CSV filename (e.g. my_results.csv). "
-                             "If omitted, defaults to <test_csv_basename>_with_predictions.csv")
-    parser.add_argument("--early_stopping", action="store_true",
-                        help="Enable EarlyStopping during --finetune "
-                             "(default: off for finetune, on for from-scratch training)")
-    parser.add_argument("--es_patience", type=int, default=5,
-                        help="EarlyStopping patience when --early_stopping is set (default: 5)")
+    parser.add_argument(
+        "--config", type=str, required=True, help="Path to YAML config file"
+    )
+    parser.add_argument(
+        "--train_csv", type=str, default=None, help="Path to training split CSV"
+    )
+    parser.add_argument(
+        "--val_csv", type=str, default=None, help="Path to validation split CSV"
+    )
+    parser.add_argument(
+        "--test_csv",
+        type=str,
+        default=None,
+        help="Path to test split CSV (optional; if omitted, testing is skipped)",
+    )
+    parser.add_argument(
+        "--ckpt_path", type=str, default=None, help="Checkpoint to resume/evaluate from"
+    )
+    parser.add_argument(
+        "--finetune",
+        action="store_true",
+        help="Finetune from --ckpt_path instead of evaluating",
+    )
+    parser.add_argument(
+        "--predict_only",
+        action="store_true",
+        help="Skip metrics, only export predictions CSV. "
+        "Useful when test labels are in a different "
+        "label space than the model.",
+    )
+    parser.add_argument(
+        "--spectrograms_dir",
+        type=str,
+        default=None,
+        help="Override spectrograms_dir from config (applies to train split)",
+    )
+    parser.add_argument(
+        "--val_spectrograms_dir",
+        type=str,
+        default=None,
+        help="Override spectrograms_dir for val split (falls back to --spectrograms_dir)",
+    )
+    parser.add_argument(
+        "--test_spectrograms_dir",
+        type=str,
+        default=None,
+        help="Override spectrograms_dir for test split (falls back to --spectrograms_dir)",
+    )
+    parser.add_argument(
+        "--exp_name",
+        type=str,
+        default=None,
+        help="Override cfg.name for output directory naming",
+    )
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default="test_results",
+        help="Directory for test-only CSV results (default: test_results)",
+    )
+    parser.add_argument(
+        "--output_csv",
+        type=str,
+        default=None,
+        help="Override the output CSV filename (e.g. my_results.csv). "
+        "If omitted, defaults to <test_csv_basename>_with_predictions.csv",
+    )
+    parser.add_argument(
+        "--early_stopping",
+        action="store_true",
+        help="Enable EarlyStopping during --finetune "
+        "(default: off for finetune, on for from-scratch training)",
+    )
+    parser.add_argument(
+        "--es_patience",
+        type=int,
+        default=5,
+        help="EarlyStopping patience when --early_stopping is set (default: 5)",
+    )
 
     args = parser.parse_args()
 
@@ -522,10 +609,11 @@ def main():
 
     # Attach optional extras that TrainingConfig doesn't declare but train() uses.
     import yaml as _yaml
-    with open(config_path, 'r', encoding='utf-8') as _f:
+
+    with open(config_path, "r", encoding="utf-8") as _f:
         _raw = _yaml.safe_load(_f) or {}
-    _tr_raw = _raw.get('training', {}) or {}
-    for _k in ('class_weights', 'oversample'):
+    _tr_raw = _raw.get("training", {}) or {}
+    for _k in ("class_weights", "oversample"):
         if _k in _tr_raw:
             setattr(cfg.training, _k, _tr_raw[_k])
 

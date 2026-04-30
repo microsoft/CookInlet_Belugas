@@ -92,17 +92,23 @@ def load_and_merge(
         df_4c[["spec_name", "label", "prediction"]]
         .rename(columns={"label": "label_4class", "prediction": "pred_4class"})
         .merge(
-            df_bin[["spec_name", "prediction"]].rename(columns={"prediction": "pred_binary"}),
+            df_bin[["spec_name", "prediction"]].rename(
+                columns={"prediction": "pred_binary"}
+            ),
             on="spec_name",
             how="left",
         )
         .merge(
-            df_3c[["spec_name", "prediction"]].rename(columns={"prediction": "pred_3class"}),
+            df_3c[["spec_name", "prediction"]].rename(
+                columns={"prediction": "pred_3class"}
+            ),
             on="spec_name",
             how="left",
         )
         .merge(
-            df_4c_2s[["spec_name", "prediction"]].rename(columns={"prediction": "pred_4class_2stage"}),
+            df_4c_2s[["spec_name", "prediction"]].rename(
+                columns={"prediction": "pred_4class_2stage"}
+            ),
             on="spec_name",
             how="left",
         )
@@ -114,9 +120,11 @@ def load_and_merge(
 
     n_missing_3c = (merged["pred_3class"] == -1).sum()
     if n_missing_3c:
-        print(f"  ⚠  {n_missing_3c:,} samples have no 3-class prediction "
-              f"(not in {pred_3class}). For a fair cascade comparison, "
-              f"run the 3-class model on the complete test set.")
+        print(
+            f"  ⚠  {n_missing_3c:,} samples have no 3-class prediction "
+            f"(not in {pred_3class}). For a fair cascade comparison, "
+            f"run the 3-class model on the complete test set."
+        )
 
     print(f"  Merged samples: {len(merged):,}")
     return merged
@@ -177,8 +185,16 @@ def compute_metrics(labels: np.ndarray, preds: np.ndarray) -> dict:
         fp[i] = int(((labels != i) & (preds == i)).sum())
         fn[i] = int(((labels == i) & (preds != i)).sum())
         tn[i] = int(((labels != i) & (preds != i)).sum())
-    return dict(precision=precision, recall=recall, f1=f1, support=support,
-                tp=tp, fp=fp, fn=fn, tn=tn)
+    return dict(
+        precision=precision,
+        recall=recall,
+        f1=f1,
+        support=support,
+        tp=tp,
+        fp=fp,
+        fn=fn,
+        tn=tn,
+    )
 
 
 def build_comparison_df(all_metrics: dict) -> pd.DataFrame:
@@ -208,13 +224,16 @@ def print_comparison(df: pd.DataFrame) -> None:
     approaches = APPROACH_NAMES
 
     # Column widths
-    cls_w = max(len(c) for c in CLASS_NAMES) + 2       # class col
-    val_w = 10                                          # value cols
-    grp_w = val_w * len(approaches) + len(approaches)   # group span
+    cls_w = max(len(c) for c in CLASS_NAMES) + 2  # class col
+    val_w = 10  # value cols
+    grp_w = val_w * len(approaches) + len(approaches)  # group span
 
     # Shortened approach labels for sub-header
-    short = {"4-Class": "4-class", "Binary+3-Class": "Binary +\n3-class",
-             "Binary+4-Class": "Binary +\n4-class"}
+    short = {
+        "4-Class": "4-class",
+        "Binary+3-Class": "Binary +\n3-class",
+        "Binary+4-Class": "Binary +\n4-class",
+    }
 
     # Top border
     sep_line = "+" + "-" * cls_w
@@ -260,14 +279,20 @@ def print_comparison(df: pd.DataFrame) -> None:
 # Binary+3-Class only
 # ---------------------------------------------------------------------------
 def load_and_merge_b3c(pred_binary: str, pred_3class: str) -> pd.DataFrame:
-    """Load binary and 3-class CSVs and reconstruct 4-class ground truth.
+    """Load binary and 3-class CSVs and produce a 4-class ground-truth column.
 
-    4-class label reconstruction:
+    Two label spaces are supported, detected from the unique values in the
+    binary CSV's ``label`` column:
+
+    - **Binary label space** (labels ⊆ {0, 1}):
         binary label = 0  →  label_4class = 0  (No Whale)
-        binary label = 1  →  label_4class = 3-class label + 1
+        binary label = 1  →  label_4class = 3-class **prediction** + 1
+      The 3-class CSV must contain predictions for the complete test set so
+      that binary false positives are still classified by the 3-class model.
 
-    The 3-class CSV must have been run on the complete test set so that
-    binary false positives are handled by the 3-class model.
+    - **4-class label space** (labels include 2 or 3):
+        label_4class = label_binary  (used as-is — already 4-class)
+      In this mode the 3-class CSV's prediction is informational only.
     """
     df_bin = pd.read_csv(pred_binary)
     df_3c = pd.read_csv(pred_3class)
@@ -279,22 +304,39 @@ def load_and_merge_b3c(pred_binary: str, pred_3class: str) -> pd.DataFrame:
         df_bin[["spec_name", "label", "prediction"]]
         .rename(columns={"label": "label_binary", "prediction": "pred_binary"})
         .merge(
-            df_3c[["spec_name", "prediction"]].rename(columns={"prediction": "pred_3class"}),
+            df_3c[["spec_name", "prediction"]].rename(
+                columns={"prediction": "pred_3class"}
+            ),
             on="spec_name",
             how="left",
         )
     )
     merged["pred_3class"] = merged["pred_3class"].fillna(-1).astype(int)
 
-    # Reconstruct 4-class ground truth from binary labels
-    merged["label_4class"] = merged["label_binary"]  # No Whale = 0 stays as-is
-    is_whale = merged["label_binary"] == 1
-    merged.loc[is_whale, "label_4class"] = merged.loc[is_whale, "pred_3class"].clip(lower=0) + 1
+    unique_labels = set(merged["label_binary"].dropna().astype(int).unique())
+    if unique_labels.issubset({0, 1}):
+        # Binary label space → reconstruct species via 3-class prediction
+        print(
+            "  Detected binary label space; reconstructing 4-class via 3-class prediction."
+        )
+        merged["label_4class"] = merged["label_binary"]
+        is_whale = merged["label_binary"] == 1
+        merged.loc[is_whale, "label_4class"] = (
+            merged.loc[is_whale, "pred_3class"].clip(lower=0) + 1
+        )
+    else:
+        # Already 4-class
+        print(
+            f"  Detected 4-class label space (labels: {sorted(unique_labels)}); using labels as-is."
+        )
+        merged["label_4class"] = merged["label_binary"].astype(int)
 
     n_missing = (merged["pred_3class"] == -1).sum()
     if n_missing:
-        print(f"  ⚠  {n_missing:,} samples have no 3-class prediction "
-              f"(not in {pred_3class}).")
+        print(
+            f"  ⚠  {n_missing:,} samples have no 3-class prediction "
+            f"(not in {pred_3class})."
+        )
 
     print(f"  Merged samples: {len(merged):,}")
     return merged
@@ -303,42 +345,69 @@ def load_and_merge_b3c(pred_binary: str, pred_3class: str) -> pd.DataFrame:
 def print_single_approach(metrics: dict, approach_name: str) -> None:
     """Pretty-print metrics for a single approach."""
     cls_w = max(len(c) for c in CLASS_NAMES) + 2
-    cnt_w = 8   # width for integer count columns
+    cnt_w = 8  # width for integer count columns
     val_w = 10  # width for float metric columns
     n_counts = 4  # FN, FP, TP, TN
     n_metrics = 3  # Precision, Recall, F1
-    sep_line = ("+" + "-" * cls_w
-                + ("+" + "-" * cnt_w) * n_counts
-                + ("+" + "-" * val_w) * n_metrics + "+")
+    sep_line = (
+        "+"
+        + "-" * cls_w
+        + ("+" + "-" * cnt_w) * n_counts
+        + ("+" + "-" * val_w) * n_metrics
+        + "+"
+    )
 
     print(f"\n{approach_name}")
     print(sep_line)
-    print("|" + "Class".center(cls_w)
-          + "|" + "FN".center(cnt_w)
-          + "|" + "FP".center(cnt_w)
-          + "|" + "TP".center(cnt_w)
-          + "|" + "TN".center(cnt_w)
-          + "|" + "Precision".center(val_w)
-          + "|" + "Recall".center(val_w)
-          + "|" + "F1".center(val_w) + "|")
+    print(
+        "|"
+        + "Class".center(cls_w)
+        + "|"
+        + "FN".center(cnt_w)
+        + "|"
+        + "FP".center(cnt_w)
+        + "|"
+        + "TP".center(cnt_w)
+        + "|"
+        + "TN".center(cnt_w)
+        + "|"
+        + "Precision".center(val_w)
+        + "|"
+        + "Recall".center(val_w)
+        + "|"
+        + "F1".center(val_w)
+        + "|"
+    )
     print(sep_line)
     for i, cls in enumerate(CLASS_NAMES):
-        print("|" + cls.center(cls_w)
-              + "|" + str(metrics["fn"][i]).center(cnt_w)
-              + "|" + str(metrics["fp"][i]).center(cnt_w)
-              + "|" + str(metrics["tp"][i]).center(cnt_w)
-              + "|" + str(metrics["tn"][i]).center(cnt_w)
-              + "|" + f"{metrics['precision'][i]:.4f}".center(val_w)
-              + "|" + f"{metrics['recall'][i]:.4f}".center(val_w)
-              + "|" + f"{metrics['f1'][i]:.4f}".center(val_w) + "|")
+        print(
+            "|"
+            + cls.center(cls_w)
+            + "|"
+            + str(metrics["fn"][i]).center(cnt_w)
+            + "|"
+            + str(metrics["fp"][i]).center(cnt_w)
+            + "|"
+            + str(metrics["tp"][i]).center(cnt_w)
+            + "|"
+            + str(metrics["tn"][i]).center(cnt_w)
+            + "|"
+            + f"{metrics['precision'][i]:.4f}".center(val_w)
+            + "|"
+            + f"{metrics['recall'][i]:.4f}".center(val_w)
+            + "|"
+            + f"{metrics['f1'][i]:.4f}".center(val_w)
+            + "|"
+        )
         print(sep_line)
 
 
 # ---------------------------------------------------------------------------
 # Experiment comparison (same model, different runs)
 # ---------------------------------------------------------------------------
-def compare_experiments(csv_paths: list[str], exp_names: list[str],
-                        output: str | None = None) -> None:
+def compare_experiments(
+    csv_paths: list[str], exp_names: list[str], output: str | None = None
+) -> None:
     """Compare multiple prediction CSVs from the same model type.
 
     Each CSV must have ``label`` and ``prediction`` columns.  Class names
@@ -356,8 +425,11 @@ def compare_experiments(csv_paths: list[str], exp_names: list[str],
     all_metrics = {}
     for df, name in zip(dfs, exp_names):
         p, r, f1, sup = precision_recall_fscore_support(
-            df["label"].values, df["prediction"].values,
-            labels=all_labels, average=None, zero_division=0,
+            df["label"].values,
+            df["prediction"].values,
+            labels=all_labels,
+            average=None,
+            zero_division=0,
         )
         all_metrics[name] = dict(precision=p, recall=r, f1=f1, support=sup)
 
@@ -380,8 +452,9 @@ def compare_experiments(csv_paths: list[str], exp_names: list[str],
         print(f"\nResults saved to {output}")
 
 
-def _print_experiment_table(df: pd.DataFrame, exp_names: list[str],
-                            class_labels: list) -> None:
+def _print_experiment_table(
+    df: pd.DataFrame, exp_names: list[str], class_labels: list
+) -> None:
     """Pretty-print experiment comparison table."""
     metrics = ("Precision", "Recall", "F1")
     cls_w = max(max(len(str(c)) for c in class_labels), 5) + 2
@@ -424,7 +497,7 @@ def _print_experiment_table(df: pd.DataFrame, exp_names: list[str],
 def main():
     parser = argparse.ArgumentParser(
         description="Compare model approaches or experiments using saved "
-                    "prediction CSVs.",
+        "prediction CSVs.",
     )
     parser.add_argument(
         "--pred_binary",
@@ -456,8 +529,8 @@ def main():
         nargs="+",
         default=None,
         help="Two or more prediction CSVs to compare as experiments "
-             "(same model, different runs).  When provided, the cascade "
-             "comparison is skipped.",
+        "(same model, different runs).  When provided, the cascade "
+        "comparison is skipped.",
     )
     parser.add_argument(
         "--names",
@@ -470,8 +543,8 @@ def main():
         "--binary_3class_only",
         action="store_true",
         help="Evaluate only the Binary+3-Class cascade. "
-             "Requires --pred_binary and --pred_3class; "
-             "--pred_4class and --pred_4class_2stage are ignored.",
+        "Requires --pred_binary and --pred_3class; "
+        "--pred_4class and --pred_4class_2stage are ignored.",
     )
     parser.add_argument(
         "--output",
@@ -485,11 +558,13 @@ def main():
         # -- Experiment comparison mode --
         if args.names:
             if len(args.names) != len(args.compare):
-                parser.error("--names must have the same number of entries "
-                             "as --compare")
+                parser.error(
+                    "--names must have the same number of entries as --compare"
+                )
             exp_names = args.names
         else:
             import os
+
             exp_names = [os.path.basename(p) for p in args.compare]
 
         print("Comparing experiments …")
@@ -504,20 +579,29 @@ def main():
         print_single_approach(metrics, "Binary+3-Class")
 
         if args.output:
-            rows = [{"Class": cls,
-                     "FN": metrics["fn"][i], "FP": metrics["fp"][i],
-                     "TP": metrics["tp"][i], "TN": metrics["tn"][i],
-                     "Precision": metrics["precision"][i],
-                     "Recall": metrics["recall"][i], "F1": metrics["f1"][i],
-                     "Support": metrics["support"][i]}
-                    for i, cls in enumerate(CLASS_NAMES)]
+            rows = [
+                {
+                    "Class": cls,
+                    "FN": metrics["fn"][i],
+                    "FP": metrics["fp"][i],
+                    "TP": metrics["tp"][i],
+                    "TN": metrics["tn"][i],
+                    "Precision": metrics["precision"][i],
+                    "Recall": metrics["recall"][i],
+                    "F1": metrics["f1"][i],
+                    "Support": metrics["support"][i],
+                }
+                for i, cls in enumerate(CLASS_NAMES)
+            ]
             pd.DataFrame(rows).to_csv(args.output, index=False, float_format="%.4f")
             print(f"\nResults saved to {args.output}")
     else:
         # -- Cascade comparison mode (original) --
         print("Loading prediction CSVs …")
         merged = load_and_merge(
-            args.pred_binary, args.pred_3class, args.pred_4class,
+            args.pred_binary,
+            args.pred_3class,
+            args.pred_4class,
             args.pred_4class_2stage,
         )
 
@@ -530,8 +614,7 @@ def main():
         }
 
         all_metrics = {
-            name: compute_metrics(labels, preds)
-            for name, preds in all_preds.items()
+            name: compute_metrics(labels, preds) for name, preds in all_preds.items()
         }
 
         comparison_df = build_comparison_df(all_metrics)

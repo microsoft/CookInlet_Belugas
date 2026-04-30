@@ -15,17 +15,14 @@ import os
 import argparse
 import re
 import json
-import math
 from pathlib import Path
-from collections import defaultdict
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 import torch
-import torchaudio
 
 
 def spectrogram_filename(sound_path: str, start: int, end: int) -> str:
@@ -70,8 +67,7 @@ def resolve_spectrogram_path(
     # Legacy name (requires sound_id, window_id and label)
     if sound_id is not None and window_id is not None and label is not None:
         legacy_name = (
-            f"sid{sound_id}_idx{window_id}"
-            f"_start{start}_end{end}_lab{label}.npy"
+            f"sid{sound_id}_idx{window_id}_start{start}_end{end}_lab{label}.npy"
         )
         legacy_full = os.path.join(spectrograms_dir, legacy_name)
         if os.path.exists(legacy_full):
@@ -82,18 +78,26 @@ def resolve_spectrogram_path(
         return os.path.join(spectrograms_dir, std_name)
     return os.path.join(spectrograms_dir, f"unknown_{start}_{end}.npy")
 
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 
-import librosa
-import soundfile as sf
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
 
 # Import from PytorchWildlife core library
-from PytorchWildlife.models.bioacoustics import ResNetClassifier, load_model_from_checkpoint
-from PytorchWildlife.data.bioacoustics.bioacoustics_datasets import ResizeTo, PerSampleNormalize, BioacousticsInferenceDataset
-from PytorchWildlife.data.bioacoustics.bioacoustics_windows import build_inference_windows
+from PytorchWildlife.models.bioacoustics import (
+    ResNetClassifier,
+    load_model_from_checkpoint,
+)
+from PytorchWildlife.data.bioacoustics.bioacoustics_datasets import (
+    BioacousticsInferenceDataset,
+)
+from PytorchWildlife.data.bioacoustics.bioacoustics_windows import (
+    build_inference_windows,
+)
 from PytorchWildlife.data.bioacoustics.bioacoustics_configs import load_config
-from PytorchWildlife.data.bioacoustics.bioacoustics_spectrograms import compute_mel_spectrograms_gpu
+from PytorchWildlife.data.bioacoustics.bioacoustics_spectrograms import (
+    compute_mel_spectrograms_gpu,
+)
 
 
 def build_dataframe_from_spectrograms_dir(
@@ -111,12 +115,14 @@ def build_dataframe_from_spectrograms_dir(
         start_samples = int(parts[-2])
         end_samples = int(parts[-1])
         audio = "_".join(parts[:-2])
-        rows.append({
-            'file_path': str(f),
-            'audio': audio,
-            'start(s)': start_samples / sample_rate,
-            'end(s)': end_samples / sample_rate,
-        })
+        rows.append(
+            {
+                "file_path": str(f),
+                "audio": audio,
+                "start(s)": start_samples / sample_rate,
+                "end(s)": end_samples / sample_rate,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -134,7 +140,7 @@ def run_inference_batch(
     """
     Run inference on a batch of data. Supports both binary and multiclass.
     """
-    is_binary = (num_classes == 2)
+    is_binary = num_classes == 2
     model.eval()
     all_paths = []
     all_logits = []
@@ -155,9 +161,9 @@ def run_inference_batch(
 
     # Parse audio paths, starts, and ends
     if meta_df is not None:
-        audios = meta_df['audio'].tolist()
-        starts = meta_df['start(s)'].tolist()
-        ends = meta_df['end(s)'].tolist()
+        audios = meta_df["audio"].tolist()
+        starts = meta_df["start(s)"].tolist()
+        ends = meta_df["end(s)"].tolist()
     else:
         annotations = None
         if annotations_json is not None:
@@ -170,13 +176,23 @@ def run_inference_batch(
         for p in all_paths:
             if "start" in p and "end" in p:
                 try:
-                    sound_id = int(re.search(r'sid(\d+)_', p).group(1))
+                    sound_id = int(re.search(r"sid(\d+)_", p).group(1))
                     if annotations:
-                        audios.append(next(s["file_name_path"] for s in annotations["sounds"] if s["id"] == sound_id))
+                        audios.append(
+                            next(
+                                s["file_name_path"]
+                                for s in annotations["sounds"]
+                                if s["id"] == sound_id
+                            )
+                        )
                     else:
                         audios.append(f"sound_{sound_id}")
-                    starts.append(float(re.search(r'start(\d+)_end', p).group(1)) / sample_rate)
-                    ends.append(float(re.search(r'end(\d+)\_lab', p).group(1)) / sample_rate)
+                    starts.append(
+                        float(re.search(r"start(\d+)_end", p).group(1)) / sample_rate
+                    )
+                    ends.append(
+                        float(re.search(r"end(\d+)\_lab", p).group(1)) / sample_rate
+                    )
                 except (AttributeError, StopIteration):
                     basename = os.path.basename(p).replace(".npy", "")
                     parts = basename.split("_")
@@ -202,12 +218,12 @@ def run_inference_batch(
         predictions = probabilities.argmax(axis=1)
 
     return {
-        'paths': all_paths,
-        'audios': audios,
-        'starts': starts,
-        'ends': ends,
-        'predictions': predictions,
-        'probabilities': probabilities,
+        "paths": all_paths,
+        "audios": audios,
+        "starts": starts,
+        "ends": ends,
+        "predictions": predictions,
+        "probabilities": probabilities,
     }
 
 
@@ -217,27 +233,30 @@ def process_inference_results_per_second(csv_path: str) -> pd.DataFrame:
     averaging the predictions that overlap according to the start(s) and end(s) columns.
     """
     df = pd.read_csv(csv_path)
-    unique_audios = df['audio'].unique()
+    unique_audios = df["audio"].unique()
 
     all_results = []
 
     for audio in unique_audios:
-        audio_df = df[df['audio'] == audio].copy()
+        audio_df = df[df["audio"] == audio].copy()
 
-        min_start = int(np.floor(audio_df['start(s)'].min()))
-        max_end = int(np.ceil(audio_df['end(s)'].max()))
+        min_start = int(np.floor(audio_df["start(s)"].min()))
+        max_end = int(np.ceil(audio_df["end(s)"].max()))
 
         for second in range(min_start, max_end):
             overlapping = audio_df[
-                ((audio_df['start(s)'] <= second) & (audio_df['end(s)'] > second)) |
-                ((audio_df['start(s)'] < second + 1) & (audio_df['end(s)'] >= second + 1))
+                ((audio_df["start(s)"] <= second) & (audio_df["end(s)"] > second))
+                | (
+                    (audio_df["start(s)"] < second + 1)
+                    & (audio_df["end(s)"] >= second + 1)
+                )
             ]
 
             if len(overlapping) > 0:
                 weights = []
                 for _, row in overlapping.iterrows():
-                    overlap_start = max(row['start(s)'], second)
-                    overlap_end = min(row['end(s)'], second + 1)
+                    overlap_start = max(row["start(s)"], second)
+                    overlap_end = min(row["end(s)"], second + 1)
                     overlap_duration = max(0, overlap_end - overlap_start)
                     weights.append(overlap_duration)
 
@@ -246,25 +265,33 @@ def process_inference_results_per_second(csv_path: str) -> pd.DataFrame:
                 if weights.sum() > 0:
                     weights = weights / weights.sum()
 
-                    avg_prediction = np.average(overlapping['prediction'], weights=weights)
-                    avg_probability = np.average(overlapping['probability'], weights=weights)
-                    avg_confidence = np.average(overlapping['confidence'], weights=weights)
+                    avg_prediction = np.average(
+                        overlapping["prediction"], weights=weights
+                    )
+                    avg_probability = np.average(
+                        overlapping["probability"], weights=weights
+                    )
+                    avg_confidence = np.average(
+                        overlapping["confidence"], weights=weights
+                    )
 
-                    all_results.append({
-                        'audio': audio,
-                        'second': second,
-                        'count_overlaps': len(overlapping),
-                        'prediction': 1 if avg_prediction >= 0.5 else 0,
-                        'avg_prediction': avg_prediction,
-                        'avg_probability': avg_probability,
-                        'avg_confidence': avg_confidence,
-                    })
+                    all_results.append(
+                        {
+                            "audio": audio,
+                            "second": second,
+                            "count_overlaps": len(overlapping),
+                            "prediction": 1 if avg_prediction >= 0.5 else 0,
+                            "avg_prediction": avg_prediction,
+                            "avg_probability": avg_probability,
+                            "avg_confidence": avg_confidence,
+                        }
+                    )
 
     results_df = pd.DataFrame(all_results)
-    results_df = results_df.sort_values(['audio', 'second']).reset_index(drop=True)
+    results_df = results_df.sort_values(["audio", "second"]).reset_index(drop=True)
 
     output_dir = os.path.dirname(csv_path)
-    output_path = os.path.join(output_dir, 'per_second_results.csv')
+    output_path = os.path.join(output_dir, "per_second_results.csv")
 
     results_df.to_csv(output_path, index=False)
     print(f"Per-second results saved to: {output_path}")
@@ -279,25 +306,27 @@ def save_inference_results(
     class_names: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """Save inference results to CSV in appropriate format."""
-    is_binary = (num_classes == 2)
+    is_binary = num_classes == 2
 
     if is_binary:
-        results_df = pd.DataFrame({
-            'audio': results['audios'],
-            'start(s)': results['starts'],
-            'end(s)': results['ends'],
-            'prediction': results['predictions'],
-            'probability': results['probabilities'],
-            'confidence': np.abs(results['probabilities'] - 0.5) * 2,
-        })
-        results_df = results_df.sort_values('confidence', ascending=False)
+        results_df = pd.DataFrame(
+            {
+                "audio": results["audios"],
+                "start(s)": results["starts"],
+                "end(s)": results["ends"],
+                "prediction": results["predictions"],
+                "probability": results["probabilities"],
+                "confidence": np.abs(results["probabilities"] - 0.5) * 2,
+            }
+        )
+        results_df = results_df.sort_values("confidence", ascending=False)
     else:
         data = {
-            'file_path': results['paths'],
-            'audio': results['audios'],
-            'start(s)': results['starts'],
-            'end(s)': results['ends'],
-            'prediction': results['predictions'],
+            "file_path": results["paths"],
+            "audio": results["audios"],
+            "start(s)": results["starts"],
+            "end(s)": results["ends"],
+            "prediction": results["predictions"],
         }
 
         if class_names is None:
@@ -305,7 +334,7 @@ def save_inference_results(
 
         for i, name in enumerate(class_names):
             col_name = name.replace(" ", "_") + "_prob"
-            data[col_name] = results['probabilities'][:, i]
+            data[col_name] = results["probabilities"][:, i]
 
         results_df = pd.DataFrame(data)
 
@@ -317,42 +346,82 @@ def save_inference_results(
 def main():
     parser = argparse.ArgumentParser(description="Run inference on bioacoustic sounds")
 
-    # Config file (optional)
-    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
+    # Config file (required — provides audio/spectrogram params to keep them
+    # consistent with what was used at training/data-prep time).
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to YAML config file (data_config or training config)",
+    )
 
     # Audio source
-    parser.add_argument("--audios_source", type=str, required=False,
-                        help="Path to folder, JSON, or CSV with windows")
+    parser.add_argument(
+        "--audios_source",
+        type=str,
+        required=False,
+        help="Path to folder, JSON, or CSV with windows",
+    )
 
     # Cascade mode: pre-computed spectrograms folder + two checkpoints
-    parser.add_argument("--spectrograms_dir", type=str, default=None,
-                        help="Path to folder of pre-computed .npy spectrograms (enables cascade mode)")
-    parser.add_argument("--checkpoint_binary", type=str, default=None,
-                        help="Binary model checkpoint (cascade mode)")
-    parser.add_argument("--checkpoint_3class", type=str, default=None,
-                        help="3-class model checkpoint (cascade mode)")
-    parser.add_argument("--output_csv", type=str, default=None,
-                        help="Output CSV path for cascade results")
-    parser.add_argument("--target_size", type=int, nargs=2, default=None,
-                        metavar=("H", "W"),
-                        help="Override spectrogram target size (H W), e.g. --target_size 224 180")
+    parser.add_argument(
+        "--spectrograms_dir",
+        type=str,
+        default=None,
+        help="Path to folder of pre-computed .npy spectrograms (enables cascade mode)",
+    )
+    parser.add_argument(
+        "--checkpoint_binary",
+        type=str,
+        default=None,
+        help="Binary model checkpoint (cascade mode)",
+    )
+    parser.add_argument(
+        "--checkpoint_3class",
+        type=str,
+        default=None,
+        help="3-class model checkpoint (cascade mode)",
+    )
+    parser.add_argument(
+        "--output_csv",
+        type=str,
+        default=None,
+        help="Output CSV path for cascade results",
+    )
+    parser.add_argument(
+        "--target_size",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("H", "W"),
+        help="Spectrogram target size (H W), e.g. --target_size 224 180. "
+        "Required for cascade mode unless derivable from config.",
+    )
 
-    # Classification mode
-    parser.add_argument("--num_classes", type=int, default=2,
-                        help="Number of classes (2=binary, >2=multiclass)")
-    parser.add_argument("--class_names", type=str, nargs="+", default=None,
-                        help="Class names for multiclass")
+    # Classification mode (CLI override; pulled from config when omitted)
+    parser.add_argument(
+        "--num_classes",
+        type=int,
+        default=None,
+        help="Number of classes; defaults to config.training.num_classes",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Class names; defaults to config.class_names",
+    )
 
-    # Audio parameters
-    parser.add_argument("--window_size_sec", type=float, default=5.0)
-    parser.add_argument("--overlap_sec", type=float, default=4.0)
-    parser.add_argument("--sample_rate", type=int, default=48000)
-
-    # Spectrogram parameters
-    parser.add_argument("--n_fft", type=int, default=2048)
-    parser.add_argument("--hop_length", type=int, default=512)
-    parser.add_argument("--n_mels", type=int, default=224)
-    parser.add_argument("--top_db", type=float, default=80.0)
+    # Audio / spectrogram parameters — None means: read from config.
+    # Pass on CLI only to override the config value.
+    parser.add_argument("--window_size_sec", type=float, default=None)
+    parser.add_argument("--overlap_sec", type=float, default=None)
+    parser.add_argument("--sample_rate", type=int, default=None)
+    parser.add_argument("--n_fft", type=int, default=None)
+    parser.add_argument("--hop_length", type=int, default=None)
+    parser.add_argument("--n_mels", type=int, default=None)
+    parser.add_argument("--top_db", type=float, default=None)
 
     # Model and inference
     parser.add_argument("--checkpoint", type=str, required=False)
@@ -360,24 +429,75 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--conf_threshold", type=float, default=0.5,
-                        help="Probability threshold for the binary classifier (default 0.5)")
+    parser.add_argument(
+        "--conf_threshold",
+        type=float,
+        default=0.5,
+        help="Probability threshold for the binary classifier (default 0.5)",
+    )
 
     # Output
     parser.add_argument("--dataset", type=str, help="Dataset name for output directory")
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--spectrograms_path", type=str, default=None)
-    parser.add_argument("--annotations_json", type=str, default=None,
-                        help="Annotations JSON for mapping sound IDs to paths")
+    parser.add_argument(
+        "--annotations_json",
+        type=str,
+        default=None,
+        help="Annotations JSON for mapping sound IDs to paths",
+    )
 
     args = parser.parse_args()
+
+    # Resolve audio / spectrogram / classification params from config.
+    # CLI values (when explicitly provided) override the config.
+    cfg = load_config(args.config)
+
+    def _from_cfg(cli_value, *path):
+        if cli_value is not None:
+            return cli_value
+        node = cfg
+        for p in path:
+            node = getattr(node, p, None)
+            if node is None:
+                return None
+        return node
+
+    args.sample_rate = _from_cfg(args.sample_rate, "audio", "sample_rate")
+    args.window_size_sec = _from_cfg(args.window_size_sec, "audio", "window_size_sec")
+    args.overlap_sec = _from_cfg(args.overlap_sec, "audio", "overlap_sec")
+    args.n_fft = _from_cfg(args.n_fft, "spectrogram", "n_fft")
+    args.hop_length = _from_cfg(args.hop_length, "spectrogram", "hop_length")
+    args.n_mels = _from_cfg(args.n_mels, "spectrogram", "n_mels")
+    args.top_db = _from_cfg(args.top_db, "spectrogram", "top_db")
+    if args.num_classes is None:
+        args.num_classes = getattr(getattr(cfg, "training", None), "num_classes", 2)
+    if args.class_names is None and getattr(cfg, "class_names", None):
+        args.class_names = list(cfg.class_names.values())
+    if not args.dataset:
+        args.dataset = getattr(cfg, "name", None)
+
+    _required = {
+        "sample_rate": args.sample_rate,
+        "n_fft": args.n_fft,
+        "hop_length": args.hop_length,
+        "n_mels": args.n_mels,
+    }
+    _missing = [k for k, v in _required.items() if v is None]
+    if _missing:
+        parser.error(
+            f"Missing required parameter(s) {_missing}: not in config and not "
+            f"passed on CLI. Either pass them explicitly or add them to {args.config}."
+        )
 
     # ------------------------------------------------------------------ #
     #  Cascade mode: spectrograms_dir + checkpoint_binary + checkpoint_3class
     # ------------------------------------------------------------------ #
     if args.spectrograms_dir is not None:
         if not args.checkpoint_binary or not args.checkpoint_3class:
-            parser.error("--spectrograms_dir requires both --checkpoint_binary and --checkpoint_3class")
+            parser.error(
+                "--spectrograms_dir requires both --checkpoint_binary and --checkpoint_3class"
+            )
 
         if args.device == "cuda" and not torch.cuda.is_available():
             print("CUDA not available, switching to CPU")
@@ -386,19 +506,29 @@ def main():
 
         # Build DataFrame from spectrogram filenames
         print(f"Scanning spectrograms in: {args.spectrograms_dir}")
-        meta_df = build_dataframe_from_spectrograms_dir(args.spectrograms_dir, args.sample_rate)
+        meta_df = build_dataframe_from_spectrograms_dir(
+            args.spectrograms_dir, args.sample_rate
+        )
         print(f"Found {len(meta_df)} spectrograms")
 
         if args.target_size is not None:
             target_size = tuple(args.target_size)
         else:
-            n_frames = int(np.ceil((args.window_size_sec * args.sample_rate - args.n_fft) / args.hop_length)) + 1
+            n_frames = (
+                int(
+                    np.ceil(
+                        (args.window_size_sec * args.sample_rate - args.n_fft)
+                        / args.hop_length
+                    )
+                )
+                + 1
+            )
             target_size = (args.n_mels, n_frames)
         print(f"Spectrogram target size: {target_size}")
 
         dataset = BioacousticsInferenceDataset(
             dataframe=meta_df,
-            x_col='file_path',
+            x_col="file_path",
             target_size=target_size,
             normalize=args.normalize,
         )
@@ -442,24 +572,37 @@ def main():
 
         # --- Merge results ---
         out_df = meta_df.copy()
-        out_df['pred_label_binary'] = binary_results['predictions']
-        out_df['prob_class_0'] = 1 - binary_results['probabilities']
-        out_df['confidence_binary'] = np.abs(binary_results['probabilities'] - 0.5) * 2
-        out_df['pred_label_3class'] = class3_results['predictions'] + 1  # remap 0,1,2 → 1,2,3
-        out_df['prob_class_1'] = class3_results['probabilities'][:, 0]
-        out_df['prob_class_2'] = class3_results['probabilities'][:, 1]
-        out_df['prob_class_3'] = class3_results['probabilities'][:, 2]
-        out_df['pred_label'] = out_df.apply(
-            lambda r: 0 if r['pred_label_binary'] == 0 else int(r['pred_label_3class']),
+        out_df["pred_label_binary"] = binary_results["predictions"]
+        out_df["prob_class_0"] = 1 - binary_results["probabilities"]
+        out_df["confidence_binary"] = np.abs(binary_results["probabilities"] - 0.5) * 2
+        out_df["pred_label_3class"] = (
+            class3_results["predictions"] + 1
+        )  # remap 0,1,2 → 1,2,3
+        out_df["prob_class_1"] = class3_results["probabilities"][:, 0]
+        out_df["prob_class_2"] = class3_results["probabilities"][:, 1]
+        out_df["prob_class_3"] = class3_results["probabilities"][:, 2]
+        out_df["pred_label"] = out_df.apply(
+            lambda r: 0 if r["pred_label_binary"] == 0 else int(r["pred_label_3class"]),
             axis=1,
         )
 
         # Reorder columns
-        out_df = out_df[[
-            'file_path', 'audio', 'start(s)', 'end(s)',
-            'pred_label', 'pred_label_binary', 'prob_class_0', 'confidence_binary',
-            'pred_label_3class', 'prob_class_1', 'prob_class_2', 'prob_class_3',
-        ]]
+        out_df = out_df[
+            [
+                "file_path",
+                "audio",
+                "start(s)",
+                "end(s)",
+                "pred_label",
+                "pred_label_binary",
+                "prob_class_0",
+                "confidence_binary",
+                "pred_label_3class",
+                "prob_class_1",
+                "prob_class_2",
+                "prob_class_3",
+            ]
+        ]
 
         # Save
         if args.output_csv:
@@ -476,42 +619,19 @@ def main():
         print("Inference pipeline completed successfully!")
         return
 
-    # Load config if provided
-    if args.config:
-        cfg = load_config(args.config)
-
-        if args.num_classes == 2 and cfg.training.num_classes != 2:
-            args.num_classes = cfg.training.num_classes
-        if args.class_names is None and cfg.class_names:
-            args.class_names = list(cfg.class_names.values())
-        if args.window_size_sec == 5.0:
-            args.window_size_sec = cfg.audio.window_size_sec
-        if args.overlap_sec == 4.0:
-            args.overlap_sec = cfg.audio.overlap_sec
-        if args.sample_rate == 48000:
-            args.sample_rate = cfg.audio.sample_rate
-        if args.hop_length == 512:
-            args.hop_length = cfg.spectrogram.hop_length
-        if args.n_mels == 224:
-            args.n_mels = cfg.spectrogram.n_mels
-        if args.n_fft == 2048:
-            args.n_fft = cfg.spectrogram.n_fft
-        if args.top_db == 80.0:
-            args.top_db = cfg.spectrogram.top_db
-        if not args.dataset:
-            args.dataset = cfg.name
-
-    is_binary = (args.num_classes == 2)
-    print(f"Running {'binary' if is_binary else f'multiclass ({args.num_classes} classes)'} inference")
+    is_binary = args.num_classes == 2
+    print(
+        f"Running {'binary' if is_binary else f'multiclass ({args.num_classes} classes)'} inference"
+    )
 
     # Build windows
-    if args.audios_source.endswith('.json'):
-        with open(args.audios_source, 'r') as in_file:
+    if args.audios_source.endswith(".json"):
+        with open(args.audios_source, "r") as in_file:
             windows = json.load(in_file)
         df = pd.DataFrame(windows)
-    elif args.audios_source.endswith('.csv'):
+    elif args.audios_source.endswith(".csv"):
         df = pd.read_csv(args.audios_source)
-        windows = df.to_dict('records')
+        windows = df.to_dict("records")
     else:
         windows = build_inference_windows(
             audios_source=args.audios_source,
@@ -523,7 +643,7 @@ def main():
         output_dir = os.path.join(".", "inference", args.dataset)
         os.makedirs(output_dir, exist_ok=True)
         windows_path = os.path.join(output_dir, f"{args.dataset}_windows.json")
-        with open(windows_path, 'w') as out_file:
+        with open(windows_path, "w") as out_file:
             json.dump(windows, out_file, indent=2)
         print(f"Windows saved to: {windows_path}")
 
@@ -552,24 +672,31 @@ def main():
         )
 
     # Build spec_name column — try both standard and legacy naming conventions
-    if 'spec_name' not in df.columns and 'file_path' not in df.columns:
-        df['spec_name'] = df.apply(
+    if "spec_name" not in df.columns and "file_path" not in df.columns:
+        df["spec_name"] = df.apply(
             lambda row: resolve_spectrogram_path(
                 spectrograms_path,
-                sound_path=row.get('sound_path'),
-                start=int(row['start']),
-                end=int(row['end']),
-                sound_id=row.get('sound_id'),
-                window_id=row.get('window_id'),
-                label=row.get('label'),
+                sound_path=row.get("sound_path"),
+                start=int(row["start"]),
+                end=int(row["end"]),
+                sound_id=row.get("sound_id"),
+                window_id=row.get("window_id"),
+                label=row.get("label"),
             ),
             axis=1,
         )
 
-    x_col = 'file_path' if 'file_path' in df.columns else 'spec_name'
+    x_col = "file_path" if "file_path" in df.columns else "spec_name"
 
     # Calculate target size
-    n_frames = int(np.ceil((args.window_size_sec * args.sample_rate - args.n_fft) / args.hop_length)) + 1
+    n_frames = (
+        int(
+            np.ceil(
+                (args.window_size_sec * args.sample_rate - args.n_fft) / args.hop_length
+            )
+        )
+        + 1
+    )
     target_size = (args.n_mels, n_frames)
     print(f"Spectrogram size: {target_size}")
 
@@ -588,7 +715,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True if args.device == "cuda" else False
+        pin_memory=True if args.device == "cuda" else False,
     )
 
     # Check device availability

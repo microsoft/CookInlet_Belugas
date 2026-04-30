@@ -6,33 +6,32 @@ Only runtime arguments (split paths, checkpoint) are passed via CLI.
 
 Usage:
     # Train binary from scratch
-    python train.py --config config_binary.yaml \\
+    python train.py --config configs/config_binary.yaml \\
         --train_csv data/splits_binary/train_split.csv \\
         --val_csv data/splits_binary/val_split.csv \\
         --test_csv data/splits_binary/test_split.csv
 
     # Train 3-class from scratch
-    python train.py --config config_3class.yaml \\
+    python train.py --config configs/config_3class.yaml \\
         --train_csv data/splits_3class/train_split.csv \\
         --val_csv data/splits_3class/val_split.csv \\
         --test_csv data/splits_3class/test_split.csv
 
     # Train 4-class from scratch
-    python train.py --config config_4class.yaml \\
+    python train.py --config configs/config_4class_75.yaml \\
         --train_csv data/splits_4class/train_split.csv \\
         --val_csv data/splits_4class/val_split.csv \\
         --test_csv data/splits_4class/test_split.csv
 
     # Evaluate binary from checkpoint
-    python train.py --config config_binary.yaml \\
+    python train.py --config configs/config_binary.yaml \\
         --test_csv data/splits_binary/test_split.csv \\
         --ckpt_path checkpoints/binary/best.ckpt
 
-    # Finetune binary from checkpoint
-    python train.py --config config_binary.yaml \\
-        --train_csv data/splits_binary/train_split.csv \\
-        --val_csv data/splits_binary/val_split.csv \\
-        --test_csv data/splits_binary/test_split.csv \\
+    # Finetune binary from a base checkpoint
+    python train.py --config configs/tuxedni/binary.yaml \\
+        --train_csv data/tuxedni_splits/train_binary.csv \\
+        --val_csv data/tuxedni_splits/val_binary.csv \\
         --ckpt_path checkpoints/binary/best.ckpt --finetune
 """
 

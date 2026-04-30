@@ -1,14 +1,21 @@
 """
-Usage:
-    # Binary inference
-    python inference.py --checkpoint model.ckpt --audios_source /path/to/audio --dataset birds
+Usage (--config is required; audio/spectrogram params come from there):
 
-    # Multiclass inference
-    python inference.py --checkpoint model.ckpt --audios_source /path/to/audio --dataset whales \
-        --num_classes 3 --class_names "Humpback,Orca,Beluga"
+    # Cascade mode on pre-computed spectrograms (binary + 3-class)
+    python inference.py --config data/data_config.yaml \\
+        --spectrograms_dir data/tuxedni_spectrograms \\
+        --checkpoint_binary checkpoints/tuxedni_binary-finetune/best.ckpt \\
+        --checkpoint_3class checkpoints/tuxedni_3class-finetune/best.ckpt \\
+        --output_csv inference/tuxedni_results.csv \\
+        --target_size 224 180 --dataset tuxedni --temperature 3 --normalize
 
-    # Using config file
-    python inference.py --config data/data_config.yaml --checkpoint model.ckpt --audios_source /path/to/audio
+    # Single-model inference on raw audio
+    python inference.py --config data/data_config.yaml \\
+        --checkpoint model.ckpt --audios_source /path/to/audio --dataset whales
+
+    # Multiclass single-model inference (override num_classes via config)
+    python inference.py --config configs/config_3class.yaml \\
+        --checkpoint model.ckpt --audios_source /path/to/audio --dataset whales
 """
 
 import os

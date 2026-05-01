@@ -1,0 +1,5 @@
+reviews/
+__pycache__/
+*.pyc
+.streamlit/
+.ruff_cache/

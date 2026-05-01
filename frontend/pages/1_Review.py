@@ -264,10 +264,15 @@ with col_spec:
 
 with col_info:
     st.subheader("Probabilities")
-    st.metric("prob_beluga (cls 3)", f"{row.get('prob_class_3', 0):.3f}")
-    st.metric("prob_humpback (cls 1)", f"{row.get('prob_class_1', 0):.3f}")
-    st.metric("prob_orca (cls 2)", f"{row.get('prob_class_2', 0):.3f}")
-    st.metric("prob_noise (cls 0)", f"{row.get('prob_class_0', 0):.3f}")
+    for label, col_key in [
+        ("Beluga (cls 3)",   "prob_class_3"),
+        ("Humpback (cls 1)", "prob_class_1"),
+        ("Orca (cls 2)",     "prob_class_2"),
+        ("Noise (cls 0)",    "prob_class_0"),
+    ]:
+        val = float(row.get(col_key, 0))
+        st.caption(f"**{label}**: {val:.3f}")
+        st.progress(val)
     st.markdown(f"**pred_label**: `{CATEGORY_MAP.get(int(row['pred_label']), row['pred_label'])}`")
     st.markdown(f"**segment_type**: `{row.get('segment_type', '—')}`")
     st.markdown(f"**window**: {row.get('start(s)', '?')}s – {row.get('end(s)', '?')}s")

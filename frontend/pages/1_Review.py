@@ -70,13 +70,13 @@ with st.sidebar:
     view_mode = st.radio("Window", ["2 s", "10 s"], horizontal=True)
     expanded_view = view_mode == "10 s"
 
-    plot_gain_idx = st.select_slider(
-        "Plot gain",
+    spec_gain_idx = st.select_slider(
+        "Spectrogram gain",
         options=list(range(len(PLOT_GAIN_STEPS))),
         value=1,
         format_func=lambda i: f"{PLOT_GAIN_STEPS[i]:.1f}×",
     )
-    plot_gain = PLOT_GAIN_STEPS[plot_gain_idx]
+    spec_gain = PLOT_GAIN_STEPS[spec_gain_idx]
 
     auto_contrast = st.toggle("Auto-contrast", value=False)
     noise_reduction = st.toggle("Noise reduction", value=False)
@@ -233,14 +233,14 @@ st.divider()
 # Full-width spectrogram
 @st.cache_resource(max_entries=200)
 def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
-            plot_gain, expanded_view, highpass, audio_basename, start_s, end_s):
+            spec_gain, expanded_view, highpass, audio_basename, start_s, end_s):
     if expanded_view:
         exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=highpass)
         if exp is not None:
             return render_spectrogram(
                 npy_path, pred_label, scale=scale,
                 auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                plot_gain=plot_gain, highpass=highpass,
+                spec_gain=spec_gain, highpass=highpass,
                 expanded_spec=exp["spec"],
                 t_markers=(exp["t_start"], exp["t_end"]),
                 t_total=exp["t_total"],
@@ -251,19 +251,19 @@ def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
             return render_spectrogram(
                 npy_path, pred_label, scale=scale,
                 auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                plot_gain=plot_gain, highpass=highpass,
+                spec_gain=spec_gain, highpass=highpass,
                 expanded_spec=filtered_spec,
             )
     return render_spectrogram(
         npy_path, pred_label, scale=scale,
         auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-        plot_gain=plot_gain, highpass=False,
+        spec_gain=spec_gain, highpass=False,
     )
 
 try:
     fig = _figure(
         str(row["file_path"]), int(row["pred_label"]), spec_scale,
-        auto_contrast, noise_reduction, plot_gain,
+        auto_contrast, noise_reduction, spec_gain,
         expanded_view, highpass, str(row["audio"]),
         float(row["start(s)"]), float(row["end(s)"]),
     )

@@ -46,29 +46,22 @@ def _to_linear(spec: np.ndarray) -> np.ndarray:
 
 def _apply_processing(
     spec: np.ndarray,
-    plot_gain: float = 1.0,
+    spec_gain: float = 1.0,
     noise_reduction: bool = False,
     auto_contrast: bool = False,
     hpf_cutoff_hz: float | None = None,   # when set, exclude HPF-zeroed bins from percentile
 ):
-    """Apply plot-gain, noise-reduction, and compute vmin/vmax for imshow."""
+    """Apply noise-reduction, compute vmin/vmax, then shift window by spec_gain."""
     S = spec.copy().astype(np.float32)
     n_mels = S.shape[0]
-
-    # Plot gain in dB domain
-    if plot_gain != 1.0:
-        S = S + 10.0 * np.log10(max(plot_gain, 1e-6))
 
     # Noise reduction: subtract per-frequency median
     if noise_reduction:
         noise_floor = np.median(S, axis=1, keepdims=True)
         S = np.maximum(S - noise_floor, S.min())
 
-    # Contrast / colour range
+    # Contrast / colour range — computed on the unmodified data
     if auto_contrast:
-        # When HPF is active, low-frequency bins are near-zero and would
-        # drag the 5th-percentile down, washing out the rest of the image.
-        # Restrict percentile calculation to bins above the HPF cutoff.
         if hpf_cutoff_hz is not None and hpf_cutoff_hz > 0:
             mel_max = hz_to_mel(NYQUIST)
             first_bin = int(hz_to_mel(hpf_cutoff_hz) / mel_max * (n_mels - 1))
@@ -86,11 +79,15 @@ def _apply_processing(
         vmax = S.max()
         vmin = vmax - TOP_DB
 
+    # Apply spectrogram gain: shift the display window down/up in dB.
+    # Higher gain → window shifts down → data appears brighter.
+    # This is independent of auto-contrast because it acts on vmin/vmax, not the data.
+    if spec_gain != 1.0:
+        gain_db = 10.0 * np.log10(max(spec_gain, 1e-6))
+        vmin -= gain_db
+        vmax -= gain_db
+
     # Safety clamps
-    if vmin > S.min() - 2.0:
-        vmin = S.min() - 2.0
-    if vmax - vmin < 20.0:
-        vmin = vmax - 20.0
     if np.isclose(vmin, vmax):
         vmin = vmax - 1.0
 
@@ -107,7 +104,7 @@ def render_spectrogram(
     scale: str = "mel",
     auto_contrast: bool = False,
     noise_reduction: bool = False,
-    plot_gain: float = 1.0,
+    spec_gain: float = 1.0,
     highpass: bool = False,
     expanded_spec: np.ndarray | None = None,
     t_markers: tuple | None = None,
@@ -127,7 +124,7 @@ def render_spectrogram(
 
     # Processing pipeline
     S, vmin, vmax = _apply_processing(
-        spec, plot_gain, noise_reduction, auto_contrast,
+        spec, spec_gain, noise_reduction, auto_contrast,
         hpf_cutoff_hz=HIGHPASS_CUTOFF if highpass else None,
     )
 

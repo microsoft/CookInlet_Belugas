@@ -109,6 +109,7 @@ def render_spectrogram(
     expanded_spec: np.ndarray | None = None,
     t_markers: tuple | None = None,
     t_total: float | None = None,
+    cmap: str = "magma",
 ) -> matplotlib.figure.Figure:
     """Render a spectrogram figure with all processing applied."""
     from audio_io import HIGHPASS_CUTOFF  # avoid circular import at module level
@@ -149,7 +150,7 @@ def render_spectrogram(
     fig = matplotlib.figure.Figure(figsize=(8, 3), dpi=120)
     ax = fig.add_subplot(1, 1, 1)
 
-    ax.imshow(display, aspect="auto", origin="lower", cmap="magma",
+    ax.imshow(display, aspect="auto", origin="lower", cmap=cmap,
               vmin=vmin, vmax=vmax,
               extent=extent, interpolation="nearest")
 

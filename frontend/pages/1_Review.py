@@ -81,6 +81,7 @@ with st.sidebar:
     auto_contrast = st.toggle("Auto-contrast", value=False)
     noise_reduction = st.toggle("Noise reduction", value=False)
     highpass = st.toggle("High-pass filter (≥300 Hz)", value=False)
+    use_viridis = st.toggle("Viridis colormap", value=False)
 
     st.divider()
     st.header("Audio")
@@ -233,7 +234,7 @@ st.divider()
 # Full-width spectrogram
 @st.cache_resource(max_entries=200)
 def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
-            spec_gain, expanded_view, highpass, audio_basename, start_s, end_s):
+            spec_gain, expanded_view, highpass, audio_basename, start_s, end_s, cmap):
     if expanded_view:
         exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=highpass)
         if exp is not None:
@@ -244,6 +245,7 @@ def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
                 expanded_spec=exp["spec"],
                 t_markers=(exp["t_start"], exp["t_end"]),
                 t_total=exp["t_total"],
+                cmap=cmap,
             )
     if highpass:
         filtered_spec = compute_2s_spectrogram(audio_basename, start_s, end_s, highpass=True)
@@ -253,11 +255,13 @@ def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
                 auto_contrast=auto_contrast, noise_reduction=noise_reduction,
                 spec_gain=spec_gain, highpass=highpass,
                 expanded_spec=filtered_spec,
+                cmap=cmap,
             )
     return render_spectrogram(
         npy_path, pred_label, scale=scale,
         auto_contrast=auto_contrast, noise_reduction=noise_reduction,
         spec_gain=spec_gain, highpass=False,
+        cmap=cmap,
     )
 
 try:
@@ -266,6 +270,7 @@ try:
         auto_contrast, noise_reduction, spec_gain,
         expanded_view, highpass, str(row["audio"]),
         float(row["start(s)"]), float(row["end(s)"]),
+        "viridis" if use_viridis else "magma",
     )
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")

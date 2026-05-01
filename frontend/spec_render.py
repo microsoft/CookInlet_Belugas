@@ -11,6 +11,7 @@ NYQUIST = SAMPLE_RATE / 2
 TOP_DB = 80
 CATEGORY_MAP = {0: "Background", 1: "Humpback", 2: "Orca", 3: "Beluga"}
 LABEL_COLORS = {0: "white", 1: "cyan", 2: "yellow", 3: "lime"}
+TITLE_COLORS = {0: "#666666", 1: "#b34700", 2: "#5b0080", 3: "#1a6b1a"}
 
 _HZ_TICKS = [500, 1000, 2000, 4000, 6000, 8000, 10000, int(NYQUIST)]
 
@@ -172,9 +173,11 @@ def render_spectrogram(
 
     if pred_label is not None:
         title = f"pred: {CATEGORY_MAP.get(pred_label, str(pred_label))}"
+        title_color = TITLE_COLORS.get(pred_label, "black")
     else:
         title = ""
-    ax.set_title(title, fontsize=9, color="black")
+        title_color = "black"
+    ax.set_title(title, fontsize=9, color=title_color)
 
     fig.tight_layout()
     return fig

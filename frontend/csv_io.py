@@ -50,3 +50,25 @@ def reviewed_path_for(input_csv: str) -> str:
     user = os.environ.get("USER", "unknown")
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(repo_root, "frontend", "reviews", f"{basename}_{user}_reviewed.csv")
+
+
+def autosave_path_for(input_csv: str) -> str:
+    """Return the autosave (crash-backup) path for this user's session."""
+    basename = os.path.splitext(os.path.basename(input_csv))[0]
+    user = os.environ.get("USER", "unknown")
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(repo_root, "frontend", "reviews", f"{basename}_{user}_autosave.csv")
+
+
+def write_autosave(autosave_path: str, df: pd.DataFrame) -> None:
+    """Overwrite the autosave backup (atomic write)."""
+    dir_ = os.path.dirname(autosave_path)
+    os.makedirs(dir_, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".csv.tmp")
+    try:
+        os.close(fd)
+        df.to_csv(tmp, index=False)
+        os.replace(tmp, autosave_path)
+    except Exception:
+        os.unlink(tmp)
+        raise

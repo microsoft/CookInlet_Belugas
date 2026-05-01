@@ -11,7 +11,7 @@ import streamlit as st
 # Allow imports from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from csv_io import load_predictions, upsert_review, reviewed_path_for
+from csv_io import load_predictions, upsert_review, reviewed_path_for, autosave_path_for, write_autosave
 from spec_render import render_spectrogram, CATEGORY_MAP
 from audio_io import (load_audio_slice, parse_ear_log, get_recording_datetime,
                       compute_expanded_spectrogram, compute_2s_spectrogram,
@@ -208,7 +208,20 @@ if save_clicked:
     upsert_review(reviewed_path, str(row["file_path"]), chosen, save_df)
     _load.clear()
     ts = time.strftime("%H:%M:%S")
-    status_placeholder.success(f"Saved at {ts}")
+
+    # ── Autosave every 5 labels ───────────────────────────────────────────────
+    st.session_state.setdefault("saves_since_autosave", 0)
+    st.session_state["saves_since_autosave"] += 1
+    if st.session_state["saves_since_autosave"] >= 5:
+        autosave_path = autosave_path_for(selected_csv)
+        fresh_df = load_predictions(reviewed_path)
+        write_autosave(autosave_path, fresh_df)
+        st.session_state["saves_since_autosave"] = 0
+        status_placeholder.success(f"Saved + autobacked up at {ts}")
+    else:
+        remaining = 5 - st.session_state["saves_since_autosave"]
+        status_placeholder.success(f"Saved at {ts} (autosave in {remaining})")
+
     if chosen and row_idx < len(df) - 1:
         st.session_state["row_idx"] = row_idx + 1
         st.rerun()

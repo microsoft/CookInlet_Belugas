@@ -217,50 +217,50 @@ st.divider()
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 
-col_spec, col_info = st.columns([3, 1])
+# Full-width spectrogram
+@st.cache_resource(max_entries=200)
+def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
+            plot_gain, expanded_view, highpass, audio_basename, start_s, end_s):
+    if expanded_view:
+        exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=highpass)
+        if exp is not None:
+            return render_spectrogram(
+                npy_path, pred_label, scale=scale,
+                auto_contrast=auto_contrast, noise_reduction=noise_reduction,
+                plot_gain=plot_gain, highpass=highpass,
+                expanded_spec=exp["spec"],
+                t_markers=(exp["t_start"], exp["t_end"]),
+                t_total=exp["t_total"],
+            )
+    if highpass:
+        filtered_spec = compute_2s_spectrogram(audio_basename, start_s, end_s, highpass=True)
+        if filtered_spec is not None:
+            return render_spectrogram(
+                npy_path, pred_label, scale=scale,
+                auto_contrast=auto_contrast, noise_reduction=noise_reduction,
+                plot_gain=plot_gain, highpass=highpass,
+                expanded_spec=filtered_spec,
+            )
+    return render_spectrogram(
+        npy_path, pred_label, scale=scale,
+        auto_contrast=auto_contrast, noise_reduction=noise_reduction,
+        plot_gain=plot_gain, highpass=False,
+    )
 
-with col_spec:
-    @st.cache_resource(max_entries=200)
-    def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
-                plot_gain, expanded_view, highpass, audio_basename, start_s, end_s):
-        if expanded_view:
-            exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=highpass)
-            if exp is not None:
-                return render_spectrogram(
-                    npy_path, pred_label, scale=scale,
-                    auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                    plot_gain=plot_gain, highpass=highpass,
-                    expanded_spec=exp["spec"],
-                    t_markers=(exp["t_start"], exp["t_end"]),
-                    t_total=exp["t_total"],
-                )
-        if highpass:
-            filtered_spec = compute_2s_spectrogram(audio_basename, start_s, end_s, highpass=True)
-            if filtered_spec is not None:
-                return render_spectrogram(
-                    npy_path, pred_label, scale=scale,
-                    auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                    plot_gain=plot_gain, highpass=highpass,
-                    expanded_spec=filtered_spec,
-                )
-        return render_spectrogram(
-            npy_path, pred_label, scale=scale,
-            auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-            plot_gain=plot_gain, highpass=False,
-        )
+try:
+    fig = _figure(
+        str(row["file_path"]), int(row["pred_label"]), spec_scale,
+        auto_contrast, noise_reduction, plot_gain,
+        expanded_view, highpass, str(row["audio"]),
+        float(row["start(s)"]), float(row["end(s)"]),
+    )
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    st.image(buf.getvalue(), use_container_width=True)
+except Exception as e:
+    st.error(f"Could not render spectrogram: {e}")
 
-    try:
-        fig = _figure(
-            str(row["file_path"]), int(row["pred_label"]), spec_scale,
-            auto_contrast, noise_reduction, plot_gain,
-            expanded_view, highpass, str(row["audio"]),
-            float(row["start(s)"]), float(row["end(s)"]),
-        )
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight")
-        st.image(buf.getvalue(), use_container_width=True)
-    except Exception as e:
-        st.error(f"Could not render spectrogram: {e}")
+# ── Below-spectrogram info row ────────────────────────────────────────────────
 
 PROB_COLORS = {
     "prob_class_3": ("#1a6b1a", "Beluga (cls 3)"),
@@ -279,13 +279,18 @@ def _prob_bar(label: str, value: float, color: str) -> str:
         f"</div></div>"
     )
 
-with col_info:
+col_probs, col_meta = st.columns([1, 1])
+
+with col_probs:
     st.subheader("Probabilities")
     bars_html = "".join(
         _prob_bar(lbl, float(row.get(col, 0)), clr)
         for col, (clr, lbl) in PROB_COLORS.items()
     )
     st.markdown(bars_html, unsafe_allow_html=True)
+
+with col_meta:
+    st.subheader("Metadata")
     st.markdown(f"**pred_label**: `{CATEGORY_MAP.get(int(row['pred_label']), row['pred_label'])}`")
     st.markdown(f"**segment_type**: `{row.get('segment_type', '—')}`")
     st.markdown(f"**window**: {row.get('start(s)', '?')}s – {row.get('end(s)', '?')}s")

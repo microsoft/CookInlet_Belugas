@@ -260,6 +260,49 @@ try:
 except Exception as e:
     st.error(f"Could not render spectrogram: {e}")
 
+# ── Audio playback (immediately below spectrogram) ───────────────────────────
+
+import soundfile as _sf_out
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def _raw_audio(audio_basename, start_s, end_s, use_expanded):
+    if use_expanded:
+        exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
+        if exp is not None:
+            return exp["audio"], exp["sr"]
+    return load_audio_slice(audio_basename, start_s, end_s)
+
+def _audio_bytes(data, sr):
+    processed, out_sr = apply_audio_processing(data, sr, playback_gain, highpass, noise_reduction)
+    buf = io.BytesIO()
+    _sf_out.write(buf, processed, out_sr, format="WAV", subtype="FLOAT")
+    return buf.getvalue()
+
+if expanded_view:
+    # Two side-by-side players: 2 s (segment) and 10 s (expanded window)
+    col_a2, col_a10 = st.columns(2)
+    with col_a2:
+        st.caption("▶ 2 s segment")
+        d2, sr2 = load_audio_slice(str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]))
+        if d2 is not None:
+            st.audio(_audio_bytes(d2, sr2), format="audio/wav")
+        else:
+            st.caption("⚠️ Audio unavailable.")
+    with col_a10:
+        st.caption("▶ 10 s window")
+        d10, sr10 = _raw_audio(str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]), True)
+        if d10 is not None:
+            st.audio(_audio_bytes(d10, sr10), format="audio/wav")
+        else:
+            st.caption("⚠️ Audio unavailable.")
+else:
+    raw_data, raw_sr = _raw_audio(
+        str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]), False)
+    if raw_data is not None:
+        st.audio(_audio_bytes(raw_data, raw_sr), format="audio/wav")
+    else:
+        st.caption("⚠️ Audio unavailable for this row.")
+
 # ── Below-spectrogram info row ────────────────────────────────────────────────
 
 PROB_COLORS = {
@@ -301,26 +344,3 @@ with col_meta:
         st.caption(f"🕐 Recording start: {rec_dt}")
     else:
         st.caption("🕐 Recording start: not found in EAR.LOG")
-
-# ── Audio playback ────────────────────────────────────────────────────────────
-
-@st.cache_data(show_spinner=False, max_entries=30)
-def _raw_audio(audio_basename, start_s, end_s, use_expanded):
-    """Return raw (data, sr) — cached per-row and per-view-mode."""
-    if use_expanded:
-        exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
-        if exp is not None:
-            return exp["audio"], exp["sr"]
-    return load_audio_slice(audio_basename, start_s, end_s)
-
-raw_data, raw_sr = _raw_audio(
-    str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]), expanded_view)
-
-if raw_data is not None:
-    import soundfile as _sf_out
-    processed, out_sr = apply_audio_processing(raw_data, raw_sr, playback_gain, highpass, noise_reduction)
-    buf = io.BytesIO()
-    _sf_out.write(buf, processed, out_sr, format="WAV", subtype="FLOAT")
-    st.audio(buf.getvalue(), format="audio/wav")
-else:
-    st.caption("⚠️ Audio unavailable for this row.")

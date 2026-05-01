@@ -170,9 +170,10 @@ def render_spectrogram(
         ax.axvline(x=t_markers[0], color="red", linewidth=1.2, linestyle="--")
         ax.axvline(x=t_markers[1], color="red", linewidth=1.2, linestyle="--")
 
-    title = "Spectrogram"
     if pred_label is not None:
-        title += f"  —  pred: {CATEGORY_MAP.get(pred_label, str(pred_label))}"
+        title = f"pred: {CATEGORY_MAP.get(pred_label, str(pred_label))}"
+    else:
+        title = ""
     ax.set_title(title, fontsize=9, color="black")
 
     fig.tight_layout()

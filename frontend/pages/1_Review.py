@@ -262,17 +262,30 @@ with col_spec:
     except Exception as e:
         st.error(f"Could not render spectrogram: {e}")
 
+PROB_COLORS = {
+    "prob_class_3": ("#1a6b1a", "Beluga (cls 3)"),
+    "prob_class_1": ("#b34700", "Humpback (cls 1)"),
+    "prob_class_2": ("#5b0080", "Orca (cls 2)"),
+    "prob_class_0": ("#666666", "Noise (cls 0)"),
+}
+
+def _prob_bar(label: str, value: float, color: str) -> str:
+    pct = int(value * 100)
+    return (
+        f"<div style='margin-bottom:6px'>"
+        f"<span style='font-size:0.8em'><b>{label}</b>: {value:.3f}</span>"
+        f"<div style='background:#e0e0e0;border-radius:4px;height:10px;width:100%'>"
+        f"<div style='background:{color};width:{pct}%;height:10px;border-radius:4px'></div>"
+        f"</div></div>"
+    )
+
 with col_info:
     st.subheader("Probabilities")
-    for label, col_key in [
-        ("Beluga (cls 3)",   "prob_class_3"),
-        ("Humpback (cls 1)", "prob_class_1"),
-        ("Orca (cls 2)",     "prob_class_2"),
-        ("Noise (cls 0)",    "prob_class_0"),
-    ]:
-        val = float(row.get(col_key, 0))
-        st.caption(f"**{label}**: {val:.3f}")
-        st.progress(val)
+    bars_html = "".join(
+        _prob_bar(lbl, float(row.get(col, 0)), clr)
+        for col, (clr, lbl) in PROB_COLORS.items()
+    )
+    st.markdown(bars_html, unsafe_allow_html=True)
     st.markdown(f"**pred_label**: `{CATEGORY_MAP.get(int(row['pred_label']), row['pred_label'])}`")
     st.markdown(f"**segment_type**: `{row.get('segment_type', '—')}`")
     st.markdown(f"**window**: {row.get('start(s)', '?')}s – {row.get('end(s)', '?')}s")

@@ -1,17 +1,21 @@
 """CSV load and save helpers for the review UI.
 
-The source CSV is treated as read-only: reviews are written to a separate
-file under `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv`. Each
-save creates a NEW timestamped file (so the filename always tells you when
-it was saved, and a directory listing is a save log). Periodic snapshots
-land in `frontend/reviews/backups/` with the same naming convention.
+The source CSV is treated as read-only. There are two save destinations:
+
+  * `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` —
+    explicit "Save now" snapshots; multiple files accumulate (history).
+  * `frontend/reviews/backups/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` —
+    auto-saved every N verifications; only the latest is kept (older
+    auto-saves for the same input+user are deleted).
+
+On launch, `latest_review_path` scans both directories and resumes from
+whichever is newer.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import shutil
 import tempfile
 import time
 from datetime import datetime
@@ -23,6 +27,7 @@ import streamlit as st
 import config
 
 REVIEW_DIR = Path(__file__).parent / "reviews"
+BACKUP_DIR = REVIEW_DIR / "backups"
 SAVE_MAX_ATTEMPTS = 5
 
 _REVIEW_NAME = re.compile(r"^(?P<stem>.+)_(?P<user>[^_]+)_(?P<ts>\d{8}T\d{6})\.csv$")
@@ -34,6 +39,32 @@ def _now_ts() -> str:
 
 def _user() -> str:
     return os.environ.get("USER", "anon")
+
+
+def _atomic_write_csv(df: pd.DataFrame, target: Path) -> None:
+    """Write df to target atomically, retrying on transient OSErrors."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".csv", dir=str(target.parent))
+    os.close(fd)
+    try:
+        df.to_csv(tmp, index=False)
+        last_err: OSError | None = None
+        for attempt in range(SAVE_MAX_ATTEMPTS):
+            try:
+                os.replace(tmp, target)
+                return
+            except OSError as e:
+                last_err = e
+                if attempt + 1 < SAVE_MAX_ATTEMPTS:
+                    time.sleep(0.1 * (2**attempt))
+        if last_err is not None:
+            raise last_err
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 @st.cache_data(show_spinner=False)
@@ -56,28 +87,31 @@ def load_predictions(path: str) -> pd.DataFrame:
 
 
 def review_path_for(input_csv: str, ts: str | None = None) -> Path:
-    """Build a reviewed-CSV path for the given input + timestamp.
-
-    Defaults `ts` to the current time. Same input + same second collapse
-    to the same filename so rapid clicks within one second don't
-    accumulate duplicate files.
-    """
+    """Path for an explicit save snapshot at the given timestamp."""
     if ts is None:
         ts = _now_ts()
     return REVIEW_DIR / f"{Path(input_csv).stem}_{_user()}_{ts}.csv"
 
 
-def latest_review_path(input_csv: str) -> Path | None:
-    """Most recent saved-reviews file for this input CSV+user, or None."""
-    if not REVIEW_DIR.is_dir():
-        return None
+def _matching_files(input_csv: str, dir_: Path) -> list[tuple[str, Path]]:
+    """All files under dir_ matching <input_stem>_<user>_<ts>.csv."""
+    if not dir_.is_dir():
+        return []
     user = _user()
     stem = Path(input_csv).stem
-    candidates: list[tuple[str, Path]] = []
-    for p in REVIEW_DIR.iterdir():
+    out: list[tuple[str, Path]] = []
+    for p in dir_.iterdir():
         m = _REVIEW_NAME.match(p.name)
         if m and m.group("stem") == stem and m.group("user") == user:
-            candidates.append((m.group("ts"), p))
+            out.append((m.group("ts"), p))
+    return out
+
+
+def latest_review_path(input_csv: str) -> Path | None:
+    """Most recent reviewed file (across reviews/ and reviews/backups/)."""
+    candidates = _matching_files(input_csv, REVIEW_DIR) + _matching_files(
+        input_csv, BACKUP_DIR
+    )
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[0])
@@ -85,43 +119,25 @@ def latest_review_path(input_csv: str) -> Path | None:
 
 
 def save_reviews(input_csv: str, df: pd.DataFrame) -> Path:
-    """Atomic-write the dataframe to a fresh timestamped path.
-
-    Returns the path written to. Retries os.replace on transient OSErrors
-    (EBUSY, locked files from sync agents / editors / antivirus).
-    """
+    """Save an explicit snapshot to `reviews/`. Accumulates over time."""
     target = review_path_for(input_csv)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".csv", dir=str(target.parent))
-    os.close(fd)
-    try:
-        df.to_csv(tmp, index=False)
-        last_err: OSError | None = None
-        for attempt in range(SAVE_MAX_ATTEMPTS):
+    _atomic_write_csv(df, target)
+    return target
+
+
+def save_backup(input_csv: str, df: pd.DataFrame) -> Path:
+    """Auto-save to `reviews/backups/`, keeping at most one file per input+user.
+
+    After writing the new backup, deletes any older backup files for the
+    same input CSV / user so the directory holds a single most-recent
+    auto-save.
+    """
+    target = BACKUP_DIR / f"{Path(input_csv).stem}_{_user()}_{_now_ts()}.csv"
+    _atomic_write_csv(df, target)
+    for _ts, p in _matching_files(input_csv, BACKUP_DIR):
+        if p != target:
             try:
-                os.replace(tmp, target)
-                return target
-            except OSError as e:
-                last_err = e
-                if attempt + 1 < SAVE_MAX_ATTEMPTS:
-                    time.sleep(0.1 * (2**attempt))
-        if last_err is not None:
-            raise last_err
-        return target
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
+                p.unlink()
             except OSError:
                 pass
-
-
-def backup_reviews(input_csv: str, reviewed_path: Path) -> Path:
-    """Copy the current reviewed CSV into `backups/` with a fresh timestamp."""
-    if not reviewed_path.exists():
-        raise FileNotFoundError(reviewed_path)
-    backup_dir = REVIEW_DIR / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"{Path(input_csv).stem}_{_user()}_{_now_ts()}.csv"
-    shutil.copy2(reviewed_path, backup_path)
-    return backup_path
+    return target

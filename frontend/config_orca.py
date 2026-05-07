@@ -4,6 +4,12 @@ Activated by setting `APP_PROFILE=orca` before launching streamlit. The base
 `config` module re-exports this profile's values when the env var is set, so
 no other code needs to know which profile is active.
 
+Audio and spectrogram parameters are loaded from the orca repo's
+`data/data_config.yaml` (path set via `ORCA_DATA_CONFIG` env var, defaulting
+to the standard checkout location). This keeps the rendered y-axis frequency
+labels and the HPF-recomputed spectrogram in sync with whatever values were
+used to generate the cached `.npy` files — no manual mirroring.
+
 Two-stage manual verification:
   Stage 1 (3-class):   NonBio / Bio / Orca / Unsure
   Stage 2 (ecotype):   SRKW / TKW / SAR / NRKW / OKW / Unassigned / Unsure
@@ -18,10 +24,34 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import yaml
+
+
+_ORCA_REPO_DEFAULT = Path("/home/v-druizlopez/bioacoustics/orcas_dclde2026")
+
 
 def _env_path(name: str) -> Path | None:
     v = os.environ.get(name)
     return Path(v).expanduser() if v else None
+
+
+def _load_data_config() -> dict:
+    cfg_path = (
+        _env_path("ORCA_DATA_CONFIG")
+        or _ORCA_REPO_DEFAULT / "data" / "data_config.yaml"
+    )
+    if not cfg_path.is_file():
+        raise FileNotFoundError(
+            f"Orca data_config.yaml not found at {cfg_path}. "
+            f"Set ORCA_DATA_CONFIG to its absolute path."
+        )
+    with cfg_path.open() as f:
+        return yaml.safe_load(f)
+
+
+_data_cfg = _load_data_config()
+_audio_cfg = _data_cfg["audio"]
+_spec_cfg = _data_cfg["spectrogram"]
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -34,19 +64,18 @@ EAR_LOG_PATH: Path = _env_path("EAR_LOG_PATH") or (Path(__file__).parent / "EAR.
 DEFAULT_CSV: str | None = os.environ.get("DEFAULT_CSV") or None
 
 
-# ── Audio / spectrogram ──────────────────────────────────────────────────────
-# Match the cached .npy spectrogram parameters from
-# orcas_dclde2026/data/data_config.yaml so the y-axis frequency labels and the
-# HPF-recomputed spec line up with the on-disk spec.
+# ── Audio / spectrogram (sourced from data_config.yaml) ──────────────────────
 
-SAMPLE_RATE: int = 24000
+SAMPLE_RATE: int = int(_audio_cfg["sample_rate"])
+SEGMENT_VIEW_SEC: float = float(_audio_cfg["window_size_sec"])
+N_FFT: int = int(_spec_cfg["n_fft"])
+HOP_LENGTH: int = int(_spec_cfg["hop_length"])
+N_MELS: int = int(_spec_cfg["n_mels"])
+TOP_DB: float = float(_spec_cfg["top_db"])
+
+# Review-tool knobs not present in data_config.yaml
 HIGHPASS_CUTOFF_HZ: float = 300.0
 EXPANDED_VIEW_SEC: float = 10.0
-SEGMENT_VIEW_SEC: float = 3.0
-N_MELS: int = 256
-N_FFT: int = 1024
-HOP_LENGTH: int = 128
-TOP_DB: float = 80.0
 PLAYBACK_SAMPLE_RATE: int = 44100
 
 

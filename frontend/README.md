@@ -1,46 +1,52 @@
-# Cook Inlet Belugas — Frontend
+# Bioacoustics Review
 
-Streamlit multi-page app for the Active Learning review workflow.
-
-## Pages
-
-| Page | URL path | Purpose |
-|---|---|---|
-| Home | `/` | Navigation explainer |
-| Review | `/Review` | Step through spectrogram predictions and assign `manual_verif` labels |
-| AL Targets | `/AL_Targets` | Check whether any threshold meets your P/R/F1 requirements |
+A generic Streamlit app for reviewing per-segment classifier predictions on
+spectrograms: page through the predictions, listen to the audio, and assign
+a `manual_verif` ground-truth label. Built originally for the Cook Inlet
+Belugas project but driven by `frontend/config.py` so it can be adapted to
+any spectrogram-based bioacoustic model.
 
 ## Launch
 
 ```bash
-conda activate bioacustics
-cd /home/v-manoloc/shared/v-manoloc/CookInlet_Belugas
+pip install -r requirements.txt          # at repo root
+export AUDIO_ROOT=/path/to/wav/files     # required for audio + 10-s view
+export INFERENCE_DIR=/path/to/csvs       # optional; powers the CSV picker
+export DEFAULT_CSV=/path/to/run.csv      # optional; pre-selected on launch
 streamlit run frontend/app.py --server.port 8501
 ```
 
-Then open `http://localhost:8501` in your browser.
+All paths come from environment variables — no path is hardcoded, so the
+same checkout works for any user on any machine.
 
-## Where review CSVs are saved
+## Configuring for your project
 
-Reviewed labels are written to:
-```
-frontend/reviews/<input_basename>_<username>_reviewed.csv
-```
+Edit `frontend/config.py`. The constants there cover everything project-
+specific:
 
-This file is created on first save and is **separate from the source CSV** — the source is never modified.
-
-If you close and reopen the app, the Review page will automatically load from your reviewed file (if it exists) so you pick up where you left off.
-
-## Data paths (hard-coded defaults)
-
-| Resource | Path |
+| Section | What to change |
 |---|---|
-| Demo prediction CSV | `/home/v-manoloc/shared/v-manoloc/tuxedni_results_1stAL_round_rev.csv` |
-| Threshold sweep CSVs | `/home/v-manoloc/shared/v-druizlopez/CookInlet_Belugas/inference/` |
-| Tuxedni WAV files | `/home/v-manoloc/shared/v-druizlopez/NOAA_Whales/DataInput_New/Tuxedni_channel_CI/all_audios/` |
+| Paths | Defaults if you'd rather not use env vars |
+| Audio / spectrogram | `SAMPLE_RATE`, `HIGHPASS_CUTOFF_HZ`, mel parameters |
+| CSV schema | Column names (`audio`, `start(s)`, `end(s)`, `pred_label`, `manual_verif`, …) |
+| Class taxonomy | `PRED_LABELS` (int → name), title colors, probability bar colors |
+| Manual-verification labels | `MANUAL_VERIF_LABELS` — the buttons users click + their keyboard shortcuts |
 
-## Notes
+## Workflow
 
-- The app remaps `.npy` paths that contain `/home/v-druizlopez/shared/` to the local shared mount automatically.
-- Audio requires `soundfile` (already in `requirements.txt`). If a `.wav` can't be found the row still loads with an "Audio unavailable" notice.
-- Large CSVs (>10 k rows) will trigger a warning but still load.
+- The source CSV is read-only. Reviewed labels are written to
+  `frontend/reviews/<csv_stem>_<user>_reviewed.csv` — concurrent reviewers
+  on different clones cannot stomp each other.
+- Every `BACKUP_EVERY_N_SAVES` saves (default 5), the reviewed CSV is
+  copied to `frontend/reviews/backups/<stem>_<timestamp>.csv`.
+- If `EAR.LOG` is present (or `EAR_LOG_PATH` points to one), the recording
+  start datetime is shown under the spectrogram. Optional.
+
+## Keyboard shortcuts (Review page)
+
+- `← / →` — Prev / Next
+- `1` — auto-contrast · `3` — noise reduction · `p` — high-pass filter
+- `2` — toggle expanded (10-s) view
+- Per-label keys are configured in `MANUAL_VERIF_LABELS` (Cook Inlet
+  defaults: `b` Beluga, `h` Humpback, `o` Orca, `n` Noise, `z` off_effort,
+  `u` Unsure)

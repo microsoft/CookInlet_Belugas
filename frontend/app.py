@@ -1,25 +1,106 @@
-"""Streamlit entry point for the Cook Inlet Belugas review app."""
+"""Streamlit entry point for the bioacoustics review app.
+
+Picks the predictions CSV (auto-discovered from `INFERENCE_DIR` if set,
+overridable via free-text path), loads it once into `session_state`, and
+shows summary metrics. The Review and AL Targets pages then read from
+`session_state` rather than re-loading.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
 
 import streamlit as st
 
+sys.path.insert(0, str(Path(__file__).parent))
+import config
+from csv_io import load_predictions, review_path_for
+
 st.set_page_config(
-    page_title="Cook Inlet Belugas — AL Review",
+    page_title="Bioacoustics Review",
     page_icon="🐳",
     layout="wide",
 )
 
-st.title("🐳 Cook Inlet Belugas — Active Learning Review")
+
+def _discover_csvs() -> list[str]:
+    """List candidate prediction CSVs from INFERENCE_DIR."""
+    if config.INFERENCE_DIR is None or not config.INFERENCE_DIR.is_dir():
+        return []
+    return sorted(
+        str(p) for p in config.INFERENCE_DIR.iterdir() if p.suffix == ".csv"
+    )
+
+
+with st.sidebar:
+    st.header("Predictions CSV")
+
+    discovered = _discover_csvs()
+    options = list(discovered)
+    if config.DEFAULT_CSV and config.DEFAULT_CSV not in options:
+        options.insert(0, config.DEFAULT_CSV)
+
+    if options:
+        selected = st.selectbox(
+            "Select",
+            options=options,
+            index=0,
+            format_func=lambda p: os.path.basename(p),
+        )
+    else:
+        selected = None
+        st.info(
+            "Set `INFERENCE_DIR` and/or `DEFAULT_CSV` env vars, "
+            "or paste a path below."
+        )
+
+    csv_path = st.text_input(
+        "Or enter a path",
+        value=selected or "",
+        key="csv_path_input",
+        placeholder="/path/to/predictions.csv",
+    )
+
+    if not csv_path:
+        st.stop()
+    if not os.path.isfile(csv_path):
+        st.error(f"Not a file: `{csv_path}`")
+        st.stop()
+
+    reviewed = review_path_for(csv_path)
+    if (
+        "df" not in st.session_state
+        or st.session_state.get("loaded_csv") != csv_path
+    ):
+        source = str(reviewed) if reviewed.exists() else csv_path
+        st.session_state["df"] = load_predictions(source).copy()
+        st.session_state["loaded_csv"] = csv_path
+        st.session_state["reviewed_path"] = str(reviewed)
+        st.session_state["row_idx"] = 0
+
+    df = st.session_state["df"]
+    if reviewed.exists():
+        st.info(f"Resuming from `{reviewed.name}`")
+
+    unverified = int((df[config.MANUAL_VERIF_COLUMN] == "").sum())
+    st.success(f"{len(df):,} rows · {unverified:,} unverified")
+
+st.title("🐳 Bioacoustics Pipeline Review")
 st.markdown(
     """
-    Use the sidebar to navigate between tools.
+    Open the **Review** page from the sidebar to step through spectrogram
+    predictions, listen to audio, and assign labels.
 
-    | Page | Purpose |
-    |---|---|
-    | **1 · Review** | Step through spectrogram predictions, listen to audio, and assign `manual_verif` labels. |
-    | **2 · AL Targets** | Check whether any threshold/model meets your Precision / Recall / F1 requirements. |
-
-    ---
-    Your reviewed labels are saved to `frontend/reviews/<csv_name>_<username>_reviewed.csv`
-    and never overwrite the source CSV.
+    Reviewed labels are saved to `frontend/reviews/<csv_stem>_<user>_reviewed.csv`
+    and never overwrite the source CSV. A timestamped backup is written every
+    few saves under `reviews/backups/`.
     """
 )
+
+cols = st.columns(4)
+cols[0].metric("Total rows", f"{len(df):,}")
+cols[1].metric("Unverified", f"{(df[config.MANUAL_VERIF_COLUMN] == '').sum():,}")
+cols[2].metric("Reviewed", f"{(df[config.MANUAL_VERIF_COLUMN] != '').sum():,}")
+cols[3].metric("Columns", len(df.columns))

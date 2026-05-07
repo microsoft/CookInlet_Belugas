@@ -1,364 +1,402 @@
-"""Spectrogram review & relabel UI (Component #2)."""
+"""Spectrogram review & relabel UI.
 
-import io
-import os
+Keyboard-first workflow: arrow keys to navigate, single-letter shortcuts
+to assign a label (which auto-saves and advances to the next valid row),
+1/2/3/4/p to toggle visualization options. The set of label buttons (and
+their shortcuts) is configured in `frontend/config.py`.
+"""
+
+from __future__ import annotations
+
 import sys
-import time
+from pathlib import Path
 
-import numpy as np
+import pandas as pd
 import streamlit as st
+import streamlit_shortcuts
 
-# Allow imports from repo root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import config
+from audio_io import (
+    apply_audio_processing,
+    compute_expanded_spectrogram,
+    compute_segment_spectrogram,
+    encode_wav,
+    load_audio_slice,
+)
+from csv_io import backup_reviews, save_reviews
+from ear_log import recording_date
+from spec_render import render_spectrogram
 
-from csv_io import load_predictions, upsert_review, reviewed_path_for, autosave_path_for, write_autosave
-from spec_render import render_spectrogram, CATEGORY_MAP
-from audio_io import (load_audio_slice, parse_ear_log, get_recording_datetime,
-                      compute_expanded_spectrogram, compute_2s_spectrogram,
-                      apply_audio_processing)
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Visualization-toggle keyboard shortcuts ──────────────────────────────────
 
-DEFAULT_CSV = "/home/v-manoloc/shared/v-manoloc/tuxedni_results_1stAL_round_rev.csv"
-INFERENCE_DIR = "/home/v-manoloc/shared/v-druizlopez/CookInlet_Belugas/inference"
-MANUAL_VERIF_OPTIONS = ["", "Beluga", "Noise", "off_effort", "Humpback", "Orca"]
+_VIS_SHORTCUTS = {
+    "linear_scale":     "4",
+    "auto_contrast":    "1",
+    "noise_reduction":  "3",
+    "view_expanded":    "2",
+    "highpass":         "p",
+}
 
-PLOT_GAIN_STEPS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0]
+DEFAULTS = {
+    "row_idx":         0,
+    "save_count":      0,
+    "view_expanded":   False,
+    "auto_contrast":   False,
+    "noise_reduction": False,
+    "linear_scale":    False,
+    "highpass":        False,
+    "spec_gain":       1.0,
+    "playback_gain":   1.0,
+    "use_viridis":     False,
+}
 
-# ── Page config ───────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="Review", page_icon="🔬", layout="wide")
-st.title("🔬 Spectrogram Review")
+# ── Bootstrap ────────────────────────────────────────────────────────────────
+
+st.title("🔬 Review predictions")
+
+if "df" not in st.session_state:
+    st.warning("Load a CSV from the home page sidebar first.")
+    st.stop()
+
+df: pd.DataFrame = st.session_state["df"]
+reviewed_path = Path(st.session_state["reviewed_path"])
+
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+# ── Filtering ────────────────────────────────────────────────────────────────
+
+def _compute_valid_idx(
+    df: pd.DataFrame,
+    only_unverified: bool,
+    pred_filter: list[str],
+    prob_range: tuple[float, float],
+) -> list[int]:
+    mask = pd.Series(True, index=df.index)
+    if only_unverified:
+        mask &= df[config.MANUAL_VERIF_COLUMN].fillna("").astype(str) == ""
+    label_to_int = {v: k for k, v in config.PRED_LABELS.items()}
+    pred_ints = [label_to_int[name] for name in pred_filter if name in label_to_int]
+    mask &= df[config.PRED_LABEL_COLUMN].astype(int).isin(pred_ints)
+    # P(any non-background) = 1 − P(class 0)
+    prob_whale = 1.0 - df[config.PROB_BARS[-1][0]].astype(float)  # background
+    lo, hi = prob_range
+    mask &= (prob_whale >= lo) & (prob_whale <= hi)
+    return df.index[mask].tolist()
+
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.header("Data source")
-
-    available_csvs = [DEFAULT_CSV]
-    if os.path.isdir(INFERENCE_DIR):
-        for f in sorted(os.listdir(INFERENCE_DIR)):
-            if f.endswith(".csv") and "threshold" not in f:
-                p = os.path.join(INFERENCE_DIR, f)
-                if p not in available_csvs:
-                    available_csvs.append(p)
-
-    selected_csv = st.selectbox(
-        "Prediction CSV",
-        available_csvs,
-        index=0,
-        format_func=os.path.basename,
+    st.subheader("Filters")
+    only_unverified = st.checkbox("Only unverified", value=True)
+    pred_filter = st.multiselect(
+        "Predicted label",
+        options=list(config.PRED_LABELS.values()),
+        default=list(config.PRED_LABELS.values()),
+    )
+    prob_range = st.slider(
+        "P(non-background) range",
+        min_value=0.0,
+        max_value=1.0,
+        value=(0.0, 1.0),
+        step=0.05,
+        help=(
+            "Two-handle range slider. Move LEFT handle up to keep only "
+            "high-confidence detections; move RIGHT handle down to drop them."
+        ),
     )
 
-    st.divider()
-    st.header("Filters")
-    only_unverified = st.toggle("Only unverified rows", value=True)
+valid_idx = _compute_valid_idx(df, only_unverified, pred_filter, prob_range)
 
-    pred_label_filter = st.multiselect(
-        "pred_label",
-        options=list(CATEGORY_MAP.values()),
-        default=list(CATEGORY_MAP.values()),
-    )
+with st.sidebar:
+    st.caption(f"{len(valid_idx):,} of {len(df):,} rows match filters")
 
-    prob_range = st.slider("prob_whale (class 1) range", 0.0, 1.0, (0.0, 1.0), 0.01)
-
-    st.divider()
-    st.header("Display")
-    freq_scale = st.radio("Frequency scale", ["Mel", "Linear Hz"], horizontal=True)
-    spec_scale = "linear" if freq_scale == "Linear Hz" else "mel"
-
-    view_mode = st.radio("Window", ["2 s", "10 s"], horizontal=True)
-    expanded_view = view_mode == "10 s"
-
-    spec_gain_idx = st.select_slider(
-        "Spectrogram gain",
-        options=list(range(len(PLOT_GAIN_STEPS))),
-        value=1,
-        format_func=lambda i: f"{PLOT_GAIN_STEPS[i]:.1f}×",
-    )
-    spec_gain = PLOT_GAIN_STEPS[spec_gain_idx]
-
-    auto_contrast = st.toggle("Auto-contrast", value=False)
-    noise_reduction = st.toggle("Noise reduction", value=False)
-    highpass = st.toggle("High-pass filter (≥300 Hz)", value=False)
-    use_viridis = st.toggle("Viridis colormap", value=False)
-
-    st.divider()
-    st.header("Audio")
-    playback_gain = st.slider("Playback gain", 0.1, 9.0, 2.5, 0.5)
-
-
-# ── Load data ────────────────────────────────────────────────────────────────
-
-@st.cache_data(show_spinner="Loading predictions…")
-def _load(path):
-    return load_predictions(path)
-
-
-@st.cache_data(show_spinner=False)
-def _load_ear_log():
-    return parse_ear_log()
-
-
-reviewed_path = reviewed_path_for(selected_csv)
-
-# Use reviewed file if it already exists, otherwise start from source
-load_path = reviewed_path if os.path.isfile(reviewed_path) else selected_csv
-df_full = _load(load_path)
-
-# ── Apply filters ─────────────────────────────────────────────────────────────
-
-df = df_full.copy()
-
-label_name_to_int = {v: k for k, v in CATEGORY_MAP.items()}
-allowed_ints = [label_name_to_int[n] for n in pred_label_filter if n in label_name_to_int]
-if allowed_ints:
-    df = df[df["pred_label"].isin(allowed_ints)]
-
-df = df[df["prob_class_1"].between(prob_range[0], prob_range[1])]
-
-if only_unverified:
-    df = df[df["manual_verif"].astype(str).str.strip() == ""]
-
-total_unverified = (df_full["manual_verif"].astype(str).str.strip() == "").sum()
-st.sidebar.metric("Total rows", len(df_full))
-st.sidebar.metric("Unverified", int(total_unverified))
-st.sidebar.metric("Matching filters", len(df))
-
-# ── Session state — row index ─────────────────────────────────────────────────
-
-if "row_idx" not in st.session_state or st.session_state.get("last_csv") != selected_csv:
-    st.session_state["row_idx"] = 0
-    st.session_state["last_csv"] = selected_csv
-
-if len(df) == 0:
-    st.info("No rows match the current filters. 🎉 All done, or adjust filters in the sidebar.")
+if not valid_idx:
+    st.warning("No rows match the current filters.")
     st.stop()
 
-row_idx = min(st.session_state["row_idx"], len(df) - 1)
+if st.session_state["row_idx"] not in valid_idx:
+    st.session_state["row_idx"] = valid_idx[0]
+    st.rerun()
+
+row_idx = st.session_state["row_idx"]
 row = df.iloc[row_idx]
+pos = valid_idx.index(row_idx)
 
-# ── Navigation ────────────────────────────────────────────────────────────────
-
-st.markdown(
-    f"<div style='font-size:1.1em'>Row <b>{row_idx + 1}</b> of <b>{len(df)}</b></div>",
-    unsafe_allow_html=True,
-)
-
-# ── Jump to row / npy ────────────────────────────────────────────────────────
-
-with st.expander("🔎 Jump to row or .npy file"):
-    jump_col1, jump_col2 = st.columns(2)
-
-    with jump_col1:
-        jump_row = st.number_input(
-            "Go to row number",
-            min_value=1, max_value=len(df), value=row_idx + 1, step=1,
-        )
-        if st.button("Go to row"):
-            st.session_state["row_idx"] = int(jump_row) - 1
-            st.rerun()
-
-    with jump_col2:
-        npy_query = st.text_input("Search .npy filename (partial match)")
-        if npy_query:
-            matches = df[df["file_path"].str.contains(npy_query, case=False, na=False)]
-            if not matches.empty:
-                match_idx = df.index.get_loc(matches.index[0])
-                st.caption(f"Found at row {match_idx + 1}: `{matches.iloc[0]['file_path'].split('/')[-1]}`")
-                if st.button("Jump to match"):
-                    st.session_state["row_idx"] = match_idx
-                    st.rerun()
-            else:
-                st.caption("No match found.")
-
-# ── Controls: Prev | Next | label radio | Save ────────────────────────────────
-
-current_label = str(row["manual_verif"]).strip()
-try:
-    default_idx = MANUAL_VERIF_OPTIONS.index(current_label)
-except ValueError:
-    default_idx = 0
-
-col_prev, col_next, col_radio, col_save, col_status = st.columns([1, 1, 6, 1, 2])
-with col_prev:
-    if st.button("← Prev", disabled=row_idx == 0):
-        st.session_state["row_idx"] = max(0, row_idx - 1)
-        st.rerun()
-with col_next:
-    if st.button("Next →", disabled=row_idx >= len(df) - 1):
-        st.session_state["row_idx"] = min(len(df) - 1, row_idx + 1)
-        st.rerun()
-with col_radio:
-    chosen = st.radio(
-        "Assign label (`manual_verif`)",
-        options=MANUAL_VERIF_OPTIONS,
-        index=default_idx,
-        horizontal=True,
-        format_func=lambda x: x if x else "— unverified —",
-        label_visibility="collapsed",
+with st.sidebar:
+    st.subheader("Search")
+    query = st.text_input(
+        f"Find by `{config.KEY_COLUMN}` (partial)",
+        key="search_query",
+        placeholder="e.g. 120_00038476",
     )
-with col_save:
-    st.write("")  # vertical alignment nudge
-    save_clicked = st.button("💾 Save", type="primary")
-with col_status:
-    status_placeholder = st.empty()
+    if st.button("Find", key="btn_find") and query.strip():
+        q = query.strip()
+        hits = df.index[
+            df[config.KEY_COLUMN].astype(str).str.contains(q, case=False, regex=False)
+        ].tolist()
+        if hits:
+            st.session_state["row_idx"] = int(hits[0])
+            st.toast(f"Found {len(hits)} match(es); jumped to row {hits[0]}", icon="🔍")
+            st.rerun()
+        else:
+            st.warning("No match")
 
-if save_clicked:
-    save_df = load_predictions(reviewed_path if os.path.isfile(reviewed_path) else selected_csv)
-    upsert_review(reviewed_path, str(row["file_path"]), chosen, save_df)
-    _load.clear()
-    ts = time.strftime("%H:%M:%S")
-
-    # ── Autosave every 5 labels ───────────────────────────────────────────────
-    st.session_state.setdefault("saves_since_autosave", 0)
-    st.session_state["saves_since_autosave"] += 1
-    if st.session_state["saves_since_autosave"] >= 5:
-        autosave_path = autosave_path_for(selected_csv)
-        fresh_df = load_predictions(reviewed_path)
-        write_autosave(autosave_path, fresh_df)
-        st.session_state["saves_since_autosave"] = 0
-        status_placeholder.success(f"Saved + autobacked up at {ts}")
-    else:
-        remaining = 5 - st.session_state["saves_since_autosave"]
-        status_placeholder.success(f"Saved at {ts} (autosave in {remaining})")
-
-    if chosen and row_idx < len(df) - 1:
-        st.session_state["row_idx"] = row_idx + 1
+    st.subheader("Navigation")
+    jump = st.number_input(
+        "Jump to position in filter",
+        min_value=1,
+        max_value=len(valid_idx),
+        value=pos + 1,
+        step=1,
+    )
+    if int(jump) - 1 != pos:
+        st.session_state["row_idx"] = valid_idx[int(jump) - 1]
         st.rerun()
 
-st.divider()
+    st.subheader("Visualization")
+    st.radio(
+        "Frequency scale",
+        ["Mel", "Linear Hz"],
+        horizontal=True,
+        index=1 if st.session_state["linear_scale"] else 0,
+        key="_freq_scale_radio",
+    )
+    st.session_state["linear_scale"] = st.session_state["_freq_scale_radio"] == "Linear Hz"
+    st.checkbox("Auto-contrast (1)", key="auto_contrast")
+    st.checkbox("Noise reduction (3)", key="noise_reduction")
+    st.checkbox("Viridis colormap", key="use_viridis")
+    st.slider(
+        "Spectrogram gain",
+        min_value=0.5,
+        max_value=5.0,
+        step=0.5,
+        key="spec_gain",
+    )
+    streamlit_shortcuts.add_shortcuts(
+        auto_contrast=_VIS_SHORTCUTS["auto_contrast"],
+        noise_reduction=_VIS_SHORTCUTS["noise_reduction"],
+    )
 
-# ── Main layout ───────────────────────────────────────────────────────────────
+    st.subheader("Audio")
+    st.checkbox(f"High-pass {int(config.HIGHPASS_CUTOFF_HZ)} Hz (p)", key="highpass")
+    st.slider(
+        "Playback gain",
+        min_value=0.1,
+        max_value=9.0,
+        step=0.1,
+        key="playback_gain",
+    )
+    streamlit_shortcuts.add_shortcuts(highpass=_VIS_SHORTCUTS["highpass"])
 
-# Full-width spectrogram
-@st.cache_resource(max_entries=200)
-def _figure(npy_path, pred_label, scale, auto_contrast, noise_reduction,
-            spec_gain, expanded_view, highpass, audio_basename, start_s, end_s, cmap):
-    if expanded_view:
-        exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=highpass)
-        if exp is not None:
-            return render_spectrogram(
-                npy_path, pred_label, scale=scale,
-                auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                spec_gain=spec_gain, highpass=highpass,
-                expanded_spec=exp["spec"],
-                t_markers=(exp["t_start"], exp["t_end"]),
-                t_total=exp["t_total"],
-                cmap=cmap,
-            )
-    if highpass:
-        filtered_spec = compute_2s_spectrogram(audio_basename, start_s, end_s, highpass=True)
-        if filtered_spec is not None:
-            return render_spectrogram(
-                npy_path, pred_label, scale=scale,
-                auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-                spec_gain=spec_gain, highpass=highpass,
-                expanded_spec=filtered_spec,
-                cmap=cmap,
-            )
-    return render_spectrogram(
-        npy_path, pred_label, scale=scale,
-        auto_contrast=auto_contrast, noise_reduction=noise_reduction,
-        spec_gain=spec_gain, highpass=False,
+    if st.button("💾 Save now", use_container_width=True, key="btn_save_now"):
+        save_reviews(reviewed_path, df)
+        st.toast("Saved", icon="💾")
+
+    st.subheader("Keyboard")
+    label_cheats = "  \n".join(
+        f"**{shortcut}** {label}" for label, shortcut in config.MANUAL_VERIF_LABELS
+    )
+    st.caption(
+        "← / → Prev / Next  \n"
+        f"{label_cheats}  \n"
+        "**2** expanded view · **1** auto-contrast · **3** noise red.  \n"
+        "**p** highpass"
+    )
+
+    st.subheader("Session")
+    sc = st.session_state["save_count"]
+    backup_every = config.BACKUP_EVERY_N_SAVES
+    next_backup_in = (backup_every - (sc % backup_every)) if sc > 0 else backup_every
+    st.metric("Saves this session", sc, help=f"backup every {backup_every} saves")
+    st.caption(f"next backup in {next_backup_in} more save(s)")
+    if st.session_state.get("last_backup"):
+        st.caption(f"last backup: `{st.session_state['last_backup']}`")
+    st.caption(f"backups dir: `{reviewed_path.parent / 'backups'}`")
+
+
+# ── Main panel ───────────────────────────────────────────────────────────────
+
+audio_basename = str(row[config.AUDIO_COLUMN])
+start_s = float(row[config.START_COLUMN])
+end_s = float(row[config.END_COLUMN])
+
+cmap = "viridis" if st.session_state["use_viridis"] else "magma"
+freq_scale = "linear" if st.session_state["linear_scale"] else "mel"
+
+# Spectrogram source: pre-computed .npy if no HPF and no expanded view,
+# otherwise recompute from the source .wav with the current settings.
+if st.session_state["view_expanded"]:
+    expanded = compute_expanded_spectrogram(
+        audio_basename, start_s, end_s, highpass=st.session_state["highpass"]
+    )
+    if expanded is not None:
+        spec_arg = expanded["spec"]
+        t_markers = (expanded["t_start"], expanded["t_end"])
+        t_total = expanded["t_total"]
+    else:
+        spec_arg, t_markers, t_total = None, None, None
+        st.caption("⚠️ wav not found for 10-s view — falling back to 2-s")
+elif st.session_state["highpass"]:
+    spec_arg = compute_segment_spectrogram(
+        audio_basename, start_s, end_s, highpass=True
+    )
+    t_markers, t_total = None, None
+else:
+    spec_arg, t_markers, t_total = None, None, None
+
+col_spec, col_meta = st.columns([3, 1])
+
+with col_spec:
+    fig = render_spectrogram(
+        npy_path=str(row[config.SPEC_PATH_COLUMN]),
+        pred_label=int(row[config.PRED_LABEL_COLUMN]),
+        scale=freq_scale,
+        auto_contrast=st.session_state["auto_contrast"],
+        noise_reduction=st.session_state["noise_reduction"],
+        spec_gain=st.session_state["spec_gain"],
+        highpass=st.session_state["highpass"],
+        expanded_spec=spec_arg,
+        t_markers=t_markers,
+        t_total=t_total,
         cmap=cmap,
     )
+    st.pyplot(fig)
 
-try:
-    fig = _figure(
-        str(row["file_path"]), int(row["pred_label"]), spec_scale,
-        auto_contrast, noise_reduction, spec_gain,
-        expanded_view, highpass, str(row["audio"]),
-        float(row["start(s)"]), float(row["end(s)"]),
-        "viridis" if use_viridis else "magma",
-    )
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    st.image(buf.getvalue(), use_container_width=True)
-except Exception as e:
-    st.error(f"Could not render spectrogram: {e}")
+    # Audio: dual-player if expanded, single otherwise.
+    def _audio_bytes_for(data, sr):
+        processed, out_sr = apply_audio_processing(
+            data, sr,
+            playback_gain=st.session_state["playback_gain"],
+            highpass=st.session_state["highpass"],
+            noise_reduction=st.session_state["noise_reduction"],
+        )
+        return encode_wav(processed, out_sr)
 
-# ── Audio playback (immediately below spectrogram) ───────────────────────────
-
-import soundfile as _sf_out
-
-@st.cache_data(show_spinner=False, max_entries=30)
-def _raw_audio(audio_basename, start_s, end_s, use_expanded):
-    if use_expanded:
-        exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
-        if exp is not None:
-            return exp["audio"], exp["sr"]
-    return load_audio_slice(audio_basename, start_s, end_s)
-
-def _audio_bytes(data, sr):
-    processed, out_sr = apply_audio_processing(data, sr, playback_gain, highpass, noise_reduction)
-    buf = io.BytesIO()
-    _sf_out.write(buf, processed, out_sr, format="WAV", subtype="FLOAT")
-    return buf.getvalue()
-
-if expanded_view:
-    # Two side-by-side players: 2 s (segment) and 10 s (expanded window)
-    col_a2, col_a10 = st.columns(2)
-    with col_a2:
-        st.caption("▶ 2 s segment")
-        d2, sr2 = load_audio_slice(str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]))
-        if d2 is not None:
-            st.audio(_audio_bytes(d2, sr2), format="audio/wav")
-        else:
-            st.caption("⚠️ Audio unavailable.")
-    with col_a10:
-        st.caption("▶ 10 s window")
-        d10, sr10 = _raw_audio(str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]), True)
-        if d10 is not None:
-            st.audio(_audio_bytes(d10, sr10), format="audio/wav")
-        else:
-            st.caption("⚠️ Audio unavailable.")
-else:
-    raw_data, raw_sr = _raw_audio(
-        str(row["audio"]), float(row["start(s)"]), float(row["end(s)"]), False)
-    if raw_data is not None:
-        st.audio(_audio_bytes(raw_data, raw_sr), format="audio/wav")
+    if st.session_state["view_expanded"]:
+        col_a2, col_a10 = st.columns(2)
+        with col_a2:
+            st.caption(f"▶ {config.SEGMENT_VIEW_SEC:.0f}-s segment")
+            d2, sr2 = load_audio_slice(audio_basename, start_s, end_s)
+            if d2 is not None and sr2 is not None:
+                st.audio(_audio_bytes_for(d2, sr2), format="audio/wav")
+            else:
+                st.caption("⚠️ Audio unavailable.")
+        with col_a10:
+            st.caption(f"▶ {config.EXPANDED_VIEW_SEC:.0f}-s window")
+            exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
+            if exp is not None:
+                st.audio(
+                    _audio_bytes_for(exp["audio"], exp["sr"]), format="audio/wav"
+                )
+            else:
+                st.caption("⚠️ Audio unavailable.")
     else:
-        st.caption("⚠️ Audio unavailable for this row.")
+        d, sr = load_audio_slice(audio_basename, start_s, end_s)
+        if d is not None and sr is not None:
+            st.audio(_audio_bytes_for(d, sr), format="audio/wav")
+        else:
+            st.caption(f"⚠️ Audio unavailable for `{audio_basename}`")
 
-# ── Below-spectrogram info row ────────────────────────────────────────────────
+    st.checkbox("10-second context view (key: 2)", key="view_expanded")
+    streamlit_shortcuts.add_shortcuts(view_expanded=_VIS_SHORTCUTS["view_expanded"])
 
-PROB_COLORS = {
-    "prob_class_3": ("#1a6b1a", "Beluga (cls 3)"),
-    "prob_class_1": ("#b34700", "Humpback (cls 1)"),
-    "prob_class_2": ("#5b0080", "Orca (cls 2)"),
-    "prob_class_0": ("#666666", "Noise (cls 0)"),
-}
+    date_str = recording_date(audio_basename)
+    if date_str:
+        st.caption(f"📅 Recording date: **{date_str}**")
 
-def _prob_bar(label: str, value: float, color: str) -> str:
-    pct = int(value * 100)
-    return (
-        f"<div style='margin-bottom:6px'>"
-        f"<span style='font-size:0.8em'><b>{label}</b>: {value:.3f}</span>"
-        f"<div style='background:#e0e0e0;border-radius:4px;height:10px;width:100%'>"
-        f"<div style='background:{color};width:{pct}%;height:10px;border-radius:4px'></div>"
-        f"</div></div>"
-    )
-
-col_probs, col_meta = st.columns([1, 1])
-
-with col_probs:
-    st.subheader("Probabilities")
-    bars_html = "".join(
-        _prob_bar(lbl, float(row.get(col, 0)), clr)
-        for col, (clr, lbl) in PROB_COLORS.items()
-    )
-    st.markdown(bars_html, unsafe_allow_html=True)
 
 with col_meta:
-    st.subheader("Metadata")
-    st.markdown(f"**pred_label**: `{CATEGORY_MAP.get(int(row['pred_label']), row['pred_label'])}`")
-    st.markdown(f"**segment_type**: `{row.get('segment_type', '—')}`")
-    st.markdown(f"**window**: {row.get('start(s)', '?')}s – {row.get('end(s)', '?')}s")
-    st.markdown(f"**audio**: `{row.get('audio', '—')}`")
-    ear_log = _load_ear_log()
-    rec_dt = get_recording_datetime(str(row.get("audio", "")), ear_log)
-    if rec_dt:
-        st.caption(f"🕐 Recording start: {rec_dt}")
-    else:
-        st.caption("🕐 Recording start: not found in EAR.LOG")
+    st.subheader("Prediction")
+    pred = int(row[config.PRED_LABEL_COLUMN])
+    pred_label = config.PRED_LABELS.get(pred, "?")
+    st.markdown(f"#### `{pred_label}`")
+
+    current = (str(row[config.MANUAL_VERIF_COLUMN]) or "").strip()
+    st.markdown(f"**Manual verif**: `{current or 'unverified'}`")
+
+    btn_cols = st.columns(2)
+    for i, (label, shortcut) in enumerate(config.MANUAL_VERIF_LABELS):
+        col = btn_cols[i % 2]
+        with col:
+            btn_type = "primary" if label == current else "secondary"
+            if streamlit_shortcuts.shortcut_button(
+                label,
+                shortcut,
+                hint=False,
+                type=btn_type,
+                key=f"lbl_{label}",
+                use_container_width=True,
+            ):
+                df.at[row_idx, config.MANUAL_VERIF_COLUMN] = label
+                save_reviews(reviewed_path, df)
+                st.session_state["save_count"] += 1
+                msg = f"Saved row {row_idx}: {label}"
+                if st.session_state["save_count"] % config.BACKUP_EVERY_N_SAVES == 0:
+                    backup = backup_reviews(reviewed_path)
+                    st.session_state["last_backup"] = backup.name
+                    msg += f"  · backup → {backup.name}"
+                st.toast(msg, icon="✅")
+                new_valid = _compute_valid_idx(
+                    df, only_unverified, pred_filter, prob_range
+                )
+                if row_idx not in new_valid:
+                    next_after = next((i for i in new_valid if i > row_idx), None)
+                    if next_after is not None:
+                        st.session_state["row_idx"] = next_after
+                st.rerun()
+
+    if st.button("Clear (back to unverified)", use_container_width=True, key="lbl_clear"):
+        df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
+        save_reviews(reviewed_path, df)
+        st.toast(f"Cleared row {row_idx}", icon="🧹")
+        st.rerun()
+
+    st.subheader("Probabilities")
+    for col_name, display_label, _ in config.PROB_BARS:
+        if col_name in df.columns:
+            p = float(row[col_name])
+            st.progress(min(max(p, 0.0), 1.0), text=f"{display_label}: {p:.3f}")
+
+    st.caption(
+        f"audio: `{audio_basename}` · {start_s}s–{end_s}s"
+    )
+
+# ── Bottom navigation ────────────────────────────────────────────────────────
+
+st.divider()
+col_p, col_c, col_n = st.columns([1, 2, 1])
+with col_p:
+    if streamlit_shortcuts.shortcut_button(
+        "← Prev",
+        "arrowleft",
+        hint=False,
+        disabled=(pos == 0),
+        use_container_width=True,
+        key="btn_prev",
+    ):
+        st.session_state["row_idx"] = valid_idx[pos - 1]
+        st.rerun()
+with col_n:
+    if streamlit_shortcuts.shortcut_button(
+        "Next →",
+        "arrowright",
+        hint=False,
+        disabled=(pos == len(valid_idx) - 1),
+        use_container_width=True,
+        key="btn_next",
+    ):
+        st.session_state["row_idx"] = valid_idx[pos + 1]
+        st.rerun()
+with col_c:
+    st.markdown(
+        f"<div style='text-align:center'>Position <b>{pos + 1}</b> of "
+        f"{len(valid_idx):,} <span style='color:#888'>(row {row_idx + 1} in CSV)</span></div>",
+        unsafe_allow_html=True,
+    )

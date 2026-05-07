@@ -462,7 +462,7 @@ with col_meta:
                     and label == _s2_trigger
                     and not str(df.at[row_idx, _s2_col]).strip()
                 )
-                if not _needs_stage2:
+                if getattr(config, "AUTO_ADVANCE_ON_LABEL", True) and not _needs_stage2:
                     new_valid = _compute_valid_idx(
                         df, only_unverified, pred_filter, prob_range, outcome_filter
                     )
@@ -519,13 +519,20 @@ with col_meta:
                         st.session_state["last_backup"] = backup.name
                         msg += f"  · backup → {backup.name}"
                     st.toast(msg, icon="✅")
-                    new_valid = _compute_valid_idx(
-                        df, only_unverified, pred_filter, prob_range, outcome_filter
-                    )
-                    if row_idx not in new_valid:
-                        next_after = next((i for i in new_valid if i > row_idx), None)
-                        if next_after is not None:
-                            st.session_state["row_idx"] = next_after
+                    if getattr(config, "AUTO_ADVANCE_ON_LABEL", True):
+                        new_valid = _compute_valid_idx(
+                            df,
+                            only_unverified,
+                            pred_filter,
+                            prob_range,
+                            outcome_filter,
+                        )
+                        if row_idx not in new_valid:
+                            next_after = next(
+                                (i for i in new_valid if i > row_idx), None
+                            )
+                            if next_after is not None:
+                                st.session_state["row_idx"] = next_after
                     st.rerun()
         if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
             df.at[row_idx, _stage2_col] = ""

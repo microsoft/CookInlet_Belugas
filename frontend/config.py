@@ -144,6 +144,11 @@ OUTCOME_POSITIVE_TRUTH_VALUES: set[int] | None = None
 BACKUP_EVERY_N_SAVES: int = 5
 LARGE_ROW_WARN: int = 10_000
 
+# When True, clicking a label button auto-advances to the next row that
+# still matches the active filters. When False, the row stays in place so
+# the reviewer can double-check after labelling.
+AUTO_ADVANCE_ON_LABEL: bool = True
+
 
 # ── Profile override (must stay at end of file) ──────────────────────────────
 # When APP_PROFILE is set, values from `config_<profile>.py` replace the

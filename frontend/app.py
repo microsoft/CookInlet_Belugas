@@ -25,11 +25,45 @@ st.set_page_config(
 )
 
 
+def _required_columns() -> list[str]:
+    """Columns the review page reads directly from each row."""
+    names = [
+        "KEY_COLUMN",
+        "SPEC_PATH_COLUMN",
+        "AUDIO_COLUMN",
+        "START_COLUMN",
+        "END_COLUMN",
+        "PRED_LABEL_COLUMN",
+    ]
+    seen: list[str] = []
+    for name in names:
+        col = getattr(config, name, None)
+        if col and col not in seen:
+            seen.append(col)
+    return seen
+
+
+def _csv_has_required_columns(path: Path) -> bool:
+    required = _required_columns()
+    if not required:
+        return True
+    try:
+        with path.open() as f:
+            header = [c.strip() for c in f.readline().rstrip("\n").split(",")]
+    except OSError:
+        return False
+    return all(col in header for col in required)
+
+
 def _discover_csvs() -> list[str]:
-    """List candidate prediction CSVs from INFERENCE_DIR."""
+    """List candidate prediction CSVs from INFERENCE_DIR (header-validated)."""
     if config.INFERENCE_DIR is None or not config.INFERENCE_DIR.is_dir():
         return []
-    return sorted(str(p) for p in config.INFERENCE_DIR.iterdir() if p.suffix == ".csv")
+    return sorted(
+        str(p)
+        for p in config.INFERENCE_DIR.iterdir()
+        if p.suffix == ".csv" and _csv_has_required_columns(p)
+    )
 
 
 with st.sidebar:

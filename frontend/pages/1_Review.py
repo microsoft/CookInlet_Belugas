@@ -32,24 +32,24 @@ from spec_render import render_spectrogram
 # ── Visualization-toggle keyboard shortcuts ──────────────────────────────────
 
 _VIS_SHORTCUTS = {
-    "linear_scale":     "4",
-    "auto_contrast":    "1",
-    "noise_reduction":  "3",
-    "view_expanded":    "2",
-    "highpass":         "p",
+    "linear_scale": "4",
+    "auto_contrast": "1",
+    "noise_reduction": "3",
+    "view_expanded": "2",
+    "highpass": "p",
 }
 
 DEFAULTS = {
-    "row_idx":         0,
-    "save_count":      0,
-    "view_expanded":   False,
-    "auto_contrast":   False,
+    "row_idx": 0,
+    "save_count": 0,
+    "view_expanded": False,
+    "auto_contrast": False,
     "noise_reduction": False,
-    "linear_scale":    False,
-    "highpass":        False,
-    "spec_gain":       1.0,
-    "playback_gain":   1.0,
-    "use_viridis":     False,
+    "linear_scale": False,
+    "highpass": False,
+    "spec_gain": 1.0,
+    "playback_gain": 1.0,
+    "use_viridis": False,
 }
 
 
@@ -71,22 +71,32 @@ for k, v in DEFAULTS.items():
 
 # ── Filtering ────────────────────────────────────────────────────────────────
 
+
 def _compute_valid_idx(
     df: pd.DataFrame,
     only_unverified: bool,
     pred_filter: list[str],
-    prob_range: tuple[float, float],
+    prob_range: tuple[float, float] | None,
 ) -> list[int]:
     mask = pd.Series(True, index=df.index)
     if only_unverified:
-        mask &= df[config.MANUAL_VERIF_COLUMN].fillna("").astype(str) == ""
+        stage1 = df[config.MANUAL_VERIF_COLUMN].fillna("").astype(str)
+        unverified = stage1 == ""
+        stage2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+        stage2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+        if stage2_col and stage2_col in df.columns and stage2_trigger:
+            stage2 = df[stage2_col].fillna("").astype(str)
+            partial = (stage1 == stage2_trigger) & (stage2 == "")
+            unverified = unverified | partial
+        mask &= unverified
     label_to_int = {v: k for k, v in config.PRED_LABELS.items()}
     pred_ints = [label_to_int[name] for name in pred_filter if name in label_to_int]
     mask &= df[config.PRED_LABEL_COLUMN].astype(int).isin(pred_ints)
-    # P(any non-background) = 1 − P(class 0)
-    prob_whale = 1.0 - df[config.PROB_BARS[-1][0]].astype(float)  # background
-    lo, hi = prob_range
-    mask &= (prob_whale >= lo) & (prob_whale <= hi)
+    bg_col = getattr(config, "BACKGROUND_PROB_COLUMN", None)
+    if prob_range is not None and bg_col and bg_col in df.columns:
+        prob_whale = 1.0 - df[bg_col].astype(float)
+        lo, hi = prob_range
+        mask &= (prob_whale >= lo) & (prob_whale <= hi)
     return df.index[mask].tolist()
 
 
@@ -100,17 +110,21 @@ with st.sidebar:
         options=list(config.PRED_LABELS.values()),
         default=list(config.PRED_LABELS.values()),
     )
-    prob_range = st.slider(
-        "P(non-background) range",
-        min_value=0.0,
-        max_value=1.0,
-        value=(0.0, 1.0),
-        step=0.05,
-        help=(
-            "Two-handle range slider. Move LEFT handle up to keep only "
-            "high-confidence detections; move RIGHT handle down to drop them."
-        ),
-    )
+    _bg_col = getattr(config, "BACKGROUND_PROB_COLUMN", None)
+    if _bg_col and _bg_col in df.columns:
+        prob_range = st.slider(
+            "P(non-background) range",
+            min_value=0.0,
+            max_value=1.0,
+            value=(0.0, 1.0),
+            step=0.05,
+            help=(
+                "Two-handle range slider. Move LEFT handle up to keep only "
+                "high-confidence detections; move RIGHT handle down to drop them."
+            ),
+        )
+    else:
+        prob_range = None
 
 valid_idx = _compute_valid_idx(df, only_unverified, pred_filter, prob_range)
 
@@ -168,7 +182,9 @@ with st.sidebar:
         index=1 if st.session_state["linear_scale"] else 0,
         key="_freq_scale_radio",
     )
-    st.session_state["linear_scale"] = st.session_state["_freq_scale_radio"] == "Linear Hz"
+    st.session_state["linear_scale"] = (
+        st.session_state["_freq_scale_radio"] == "Linear Hz"
+    )
     st.checkbox("Auto-contrast (1)", key="auto_contrast")
     st.checkbox("Noise reduction (3)", key="noise_reduction")
     st.checkbox("Viridis colormap", key="use_viridis")
@@ -203,9 +219,17 @@ with st.sidebar:
     label_cheats = "  \n".join(
         f"**{shortcut}** {label}" for label, shortcut in config.MANUAL_VERIF_LABELS
     )
+    _s2_labels_cheat = getattr(config, "MANUAL_VERIF_STAGE2_LABELS", []) or []
+    _s2_trigger_cheat = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+    if _s2_labels_cheat:
+        s2_cheats = "  \n".join(f"**{sc}** {lbl}" for lbl, sc in _s2_labels_cheat)
+        s2_block = f"_Subtype ({_s2_trigger_cheat}):_  \n{s2_cheats}  \n"
+    else:
+        s2_block = ""
     st.caption(
         "← / → Prev / Next  \n"
         f"{label_cheats}  \n"
+        f"{s2_block}"
         "**2** expanded view · **1** auto-contrast · **3** noise red.  \n"
         "**p** highpass"
     )
@@ -272,7 +296,8 @@ with col_spec:
     # Audio: dual-player if expanded, single otherwise.
     def _audio_bytes_for(data, sr):
         processed, out_sr = apply_audio_processing(
-            data, sr,
+            data,
+            sr,
             playback_gain=st.session_state["playback_gain"],
             highpass=st.session_state["highpass"],
             noise_reduction=st.session_state["noise_reduction"],
@@ -292,9 +317,7 @@ with col_spec:
             st.caption(f"▶ {config.EXPANDED_VIEW_SEC:.0f}-s window")
             exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
             if exp is not None:
-                st.audio(
-                    _audio_bytes_for(exp["audio"], exp["sr"]), format="audio/wav"
-                )
+                st.audio(_audio_bytes_for(exp["audio"], exp["sr"]), format="audio/wav")
             else:
                 st.caption("⚠️ Audio unavailable.")
     else:
@@ -343,20 +366,84 @@ with col_meta:
                     st.session_state["last_backup"] = backup.name
                     msg += f"  · backup → {backup.name}"
                 st.toast(msg, icon="✅")
-                new_valid = _compute_valid_idx(
-                    df, only_unverified, pred_filter, prob_range
+                _s2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+                _s2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+                _needs_stage2 = (
+                    _s2_col is not None
+                    and _s2_trigger is not None
+                    and label == _s2_trigger
+                    and not str(df.at[row_idx, _s2_col]).strip()
                 )
-                if row_idx not in new_valid:
-                    next_after = next((i for i in new_valid if i > row_idx), None)
-                    if next_after is not None:
-                        st.session_state["row_idx"] = next_after
+                if not _needs_stage2:
+                    new_valid = _compute_valid_idx(
+                        df, only_unverified, pred_filter, prob_range
+                    )
+                    if row_idx not in new_valid:
+                        next_after = next((i for i in new_valid if i > row_idx), None)
+                        if next_after is not None:
+                            st.session_state["row_idx"] = next_after
                 st.rerun()
 
-    if st.button("Clear (back to unverified)", use_container_width=True, key="lbl_clear"):
+    if st.button(
+        "Clear (back to unverified)", use_container_width=True, key="lbl_clear"
+    ):
         df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
         save_reviews(reviewed_path, df)
         st.toast(f"Cleared row {row_idx}", icon="🧹")
         st.rerun()
+
+    # ── Stage 2 verification (hierarchical taxonomies) ───────────────────────
+    _stage2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+    _stage2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+    _stage2_labels = getattr(config, "MANUAL_VERIF_STAGE2_LABELS", []) or []
+    if (
+        _stage2_col
+        and _stage2_col in df.columns
+        and current == _stage2_trigger
+        and _stage2_labels
+    ):
+        st.divider()
+        st.subheader(f"{_stage2_trigger}: subtype")
+        current_s2 = (str(row[_stage2_col]) or "").strip()
+        st.markdown(f"**Subtype**: `{current_s2 or 'unverified'}`")
+        s2_btn_cols = st.columns(2)
+        for i, (label2, shortcut2) in enumerate(_stage2_labels):
+            col2 = s2_btn_cols[i % 2]
+            with col2:
+                btn_type2 = "primary" if label2 == current_s2 else "secondary"
+                if streamlit_shortcuts.shortcut_button(
+                    label2,
+                    shortcut2,
+                    hint=False,
+                    type=btn_type2,
+                    key=f"lbl2_{label2}",
+                    use_container_width=True,
+                ):
+                    df.at[row_idx, _stage2_col] = label2
+                    save_reviews(reviewed_path, df)
+                    st.session_state["save_count"] += 1
+                    msg = f"Saved row {row_idx} subtype: {label2}"
+                    if (
+                        st.session_state["save_count"] % config.BACKUP_EVERY_N_SAVES
+                        == 0
+                    ):
+                        backup = backup_reviews(reviewed_path)
+                        st.session_state["last_backup"] = backup.name
+                        msg += f"  · backup → {backup.name}"
+                    st.toast(msg, icon="✅")
+                    new_valid = _compute_valid_idx(
+                        df, only_unverified, pred_filter, prob_range
+                    )
+                    if row_idx not in new_valid:
+                        next_after = next((i for i in new_valid if i > row_idx), None)
+                        if next_after is not None:
+                            st.session_state["row_idx"] = next_after
+                    st.rerun()
+        if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
+            df.at[row_idx, _stage2_col] = ""
+            save_reviews(reviewed_path, df)
+            st.toast(f"Cleared subtype on row {row_idx}", icon="🧹")
+            st.rerun()
 
     st.subheader("Probabilities")
     for col_name, display_label, _ in config.PROB_BARS:
@@ -364,9 +451,7 @@ with col_meta:
             p = float(row[col_name])
             st.progress(min(max(p, 0.0), 1.0), text=f"{display_label}: {p:.3f}")
 
-    st.caption(
-        f"audio: `{audio_basename}` · {start_s}s–{end_s}s"
-    )
+    st.caption(f"audio: `{audio_basename}` · {start_s}s–{end_s}s")
 
 # ── Bottom navigation ────────────────────────────────────────────────────────
 

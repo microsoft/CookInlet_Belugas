@@ -26,11 +26,13 @@ REVIEW_DIR = Path(__file__).parent / "reviews"
 def load_predictions(path: str) -> pd.DataFrame:
     """Load a predictions CSV. Adds an empty `manual_verif` column if missing."""
     df = pd.read_csv(path)
-    if config.MANUAL_VERIF_COLUMN not in df.columns:
-        df[config.MANUAL_VERIF_COLUMN] = ""
-    df[config.MANUAL_VERIF_COLUMN] = (
-        df[config.MANUAL_VERIF_COLUMN].fillna("").astype(str)
-    )
+    verif_cols = [config.MANUAL_VERIF_COLUMN]
+    if getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None):
+        verif_cols.append(config.MANUAL_VERIF_STAGE2_COLUMN)
+    for col in verif_cols:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
     if len(df) > config.LARGE_ROW_WARN:
         st.warning(
             f"{len(df):,} rows loaded. Consider filtering before review "

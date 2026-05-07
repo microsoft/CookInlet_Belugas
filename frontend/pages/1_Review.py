@@ -24,7 +24,7 @@ from audio_io import (
     encode_wav,
     load_audio_slice,
 )
-from csv_io import backup_reviews, save_reviews
+from csv_io import REVIEW_DIR, backup_reviews, save_reviews
 from ear_log import recording_date
 from spec_render import render_spectrogram
 
@@ -62,7 +62,9 @@ if "df" not in st.session_state:
     st.stop()
 
 df: pd.DataFrame = st.session_state["df"]
-reviewed_path = Path(st.session_state["reviewed_path"])
+csv_path: str = st.session_state["loaded_csv"]
+_rp_str = st.session_state.get("reviewed_path") or ""
+reviewed_path: Path | None = Path(_rp_str) if _rp_str else None
 
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -284,8 +286,10 @@ with st.sidebar:
     streamlit_shortcuts.add_shortcuts(highpass=_VIS_SHORTCUTS["highpass"])
 
     if st.button("💾 Save now", use_container_width=True, key="btn_save_now"):
-        save_reviews(reviewed_path, df)
-        st.toast("Saved", icon="💾")
+        new_path = save_reviews(csv_path, df)
+        st.session_state["reviewed_path"] = str(new_path)
+        reviewed_path = new_path
+        st.toast(f"Saved → `{new_path}`", icon="💾")
 
     st.subheader("Keyboard")
     label_cheats = "  \n".join(
@@ -314,7 +318,7 @@ with st.sidebar:
     st.caption(f"next backup in {next_backup_in} more save(s)")
     if st.session_state.get("last_backup"):
         st.caption(f"last backup: `{st.session_state['last_backup']}`")
-    st.caption(f"backups dir: `{reviewed_path.parent / 'backups'}`")
+    st.caption(f"backups dir: `{REVIEW_DIR / 'backups'}`")
 
 
 # ── Main panel ───────────────────────────────────────────────────────────────
@@ -446,13 +450,15 @@ with col_meta:
                 use_container_width=True,
             ):
                 df.at[row_idx, config.MANUAL_VERIF_COLUMN] = label
-                save_reviews(reviewed_path, df)
+                new_path = save_reviews(csv_path, df)
+                st.session_state["reviewed_path"] = str(new_path)
+                reviewed_path = new_path
                 st.session_state["save_count"] += 1
-                msg = f"Saved row {row_idx}: {label}"
+                msg = f"Saved row {row_idx}: {label} → `{new_path}`"
                 if st.session_state["save_count"] % config.BACKUP_EVERY_N_SAVES == 0:
-                    backup = backup_reviews(reviewed_path)
+                    backup = backup_reviews(csv_path, new_path)
                     st.session_state["last_backup"] = backup.name
-                    msg += f"  · backup → {backup.name}"
+                    msg += f"  · backup → `{backup}`"
                 st.toast(msg, icon="✅")
                 _s2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
                 _s2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
@@ -476,8 +482,10 @@ with col_meta:
         "Clear (back to unverified)", use_container_width=True, key="lbl_clear"
     ):
         df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
-        save_reviews(reviewed_path, df)
-        st.toast(f"Cleared row {row_idx}", icon="🧹")
+        new_path = save_reviews(csv_path, df)
+        st.session_state["reviewed_path"] = str(new_path)
+        reviewed_path = new_path
+        st.toast(f"Cleared row {row_idx} → `{new_path}`", icon="🧹")
         st.rerun()
 
     # ── Stage 2 verification (hierarchical taxonomies) ───────────────────────
@@ -508,16 +516,18 @@ with col_meta:
                     use_container_width=True,
                 ):
                     df.at[row_idx, _stage2_col] = label2
-                    save_reviews(reviewed_path, df)
+                    new_path = save_reviews(csv_path, df)
+                    st.session_state["reviewed_path"] = str(new_path)
+                    reviewed_path = new_path
                     st.session_state["save_count"] += 1
-                    msg = f"Saved row {row_idx} subtype: {label2}"
+                    msg = f"Saved row {row_idx} subtype: {label2} → `{new_path}`"
                     if (
                         st.session_state["save_count"] % config.BACKUP_EVERY_N_SAVES
                         == 0
                     ):
-                        backup = backup_reviews(reviewed_path)
+                        backup = backup_reviews(csv_path, new_path)
                         st.session_state["last_backup"] = backup.name
-                        msg += f"  · backup → {backup.name}"
+                        msg += f"  · backup → `{backup}`"
                     st.toast(msg, icon="✅")
                     if getattr(config, "AUTO_ADVANCE_ON_LABEL", True):
                         new_valid = _compute_valid_idx(
@@ -536,7 +546,9 @@ with col_meta:
                     st.rerun()
         if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
             df.at[row_idx, _stage2_col] = ""
-            save_reviews(reviewed_path, df)
+            new_path = save_reviews(csv_path, df)
+            st.session_state["reviewed_path"] = str(new_path)
+            reviewed_path = new_path
             st.toast(f"Cleared subtype on row {row_idx}", icon="🧹")
             st.rerun()
 

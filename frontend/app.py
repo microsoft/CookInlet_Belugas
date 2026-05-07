@@ -16,7 +16,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 import config
-from csv_io import load_predictions, review_path_for
+from csv_io import latest_review_path, load_predictions
 
 st.set_page_config(
     page_title="Bioacoustics Review",
@@ -105,16 +105,16 @@ with st.sidebar:
         st.error(f"Not a file: `{csv_path}`")
         st.stop()
 
-    reviewed = review_path_for(csv_path)
+    reviewed = latest_review_path(csv_path)
     if "df" not in st.session_state or st.session_state.get("loaded_csv") != csv_path:
-        source = str(reviewed) if reviewed.exists() else csv_path
+        source = str(reviewed) if reviewed else csv_path
         st.session_state["df"] = load_predictions(source).copy()
         st.session_state["loaded_csv"] = csv_path
-        st.session_state["reviewed_path"] = str(reviewed)
+        st.session_state["reviewed_path"] = str(reviewed) if reviewed else ""
         st.session_state["row_idx"] = 0
 
     df = st.session_state["df"]
-    if reviewed.exists():
+    if reviewed:
         st.info(f"Resuming from `{reviewed.name}`")
 
     unverified = int((df[config.MANUAL_VERIF_COLUMN] == "").sum())
@@ -126,9 +126,10 @@ st.markdown(
     Open the **Review** page from the sidebar to step through spectrogram
     predictions, listen to audio, and assign labels.
 
-    Reviewed labels are saved to `frontend/reviews/<csv_stem>_<user>_reviewed.csv`
-    and never overwrite the source CSV. A timestamped backup is written every
-    few saves under `reviews/backups/`.
+    Reviewed labels are saved to
+    `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` and never
+    overwrite the source CSV. A timestamped backup is written every few
+    saves under `reviews/backups/`.
     """
 )
 

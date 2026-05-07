@@ -35,23 +35,36 @@ def _env_path(name: str) -> Path | None:
     return Path(v).expanduser() if v else None
 
 
-def _load_data_config() -> dict:
-    cfg_path = (
-        _env_path("ORCA_DATA_CONFIG")
-        or _ORCA_REPO_DEFAULT / "data" / "data_config.yaml"
-    )
-    if not cfg_path.is_file():
+def _load_yaml(path: Path) -> dict:
+    if not path.is_file():
         raise FileNotFoundError(
-            f"Orca data_config.yaml not found at {cfg_path}. "
-            f"Set ORCA_DATA_CONFIG to its absolute path."
+            f"Orca config not found at {path}. "
+            f"Set the corresponding env var to its absolute path."
         )
-    with cfg_path.open() as f:
+    with path.open() as f:
         return yaml.safe_load(f)
 
 
-_data_cfg = _load_data_config()
+_data_cfg = _load_yaml(
+    _env_path("ORCA_DATA_CONFIG") or _ORCA_REPO_DEFAULT / "data" / "data_config.yaml"
+)
 _audio_cfg = _data_cfg["audio"]
 _spec_cfg = _data_cfg["spectrogram"]
+
+_3class_cfg = _load_yaml(
+    _env_path("ORCA_3CLASS_CONFIG")
+    or _ORCA_REPO_DEFAULT / "configs" / "config_3class.yaml"
+)
+_ecotype_cfg = _load_yaml(
+    _env_path("ORCA_ECOTYPE_CONFIG")
+    or _ORCA_REPO_DEFAULT / "configs" / "config_ecotype.yaml"
+)
+_3CLASS_NAMES: dict[int, str] = {
+    int(k): v for k, v in _3class_cfg["class_names"].items()
+}
+_ECOTYPE_NAMES: dict[int, str] = {
+    int(k): v for k, v in _ecotype_cfg["class_names"].items()
+}
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -145,6 +158,36 @@ MANUAL_VERIF_STAGE2_LABELS: list[tuple[str, str]] = [
     ("Unassigned", "z"),
     ("Unsure", "q"),
 ]
+
+
+# ── Ground-truth display ─────────────────────────────────────────────────────
+# Cascade test split carries per-window labels: a 3-class label and an
+# ecotype label (sentinel -1 when no ecotype assignment). Class names come
+# from the orca configs, so renaming a class in one place propagates here.
+
+GROUND_TRUTH_COLUMNS: list[tuple[str, str, dict[int, str]]] = [
+    ("label_3class", "GT 3-class", _3CLASS_NAMES),
+    (
+        "ecotype_label",
+        "GT ecotype",
+        {-1: "—", **_ECOTYPE_NAMES},
+    ),
+]
+
+
+# ── Confusion-matrix filter (cascade-level orca detection) ───────────────────
+# "Positive" = cascade emitted any KW class (Unassigned_KW or a specific
+# ecotype). "Truth positive" = stage-1 ground truth is Orca. So:
+#   TP: cascade said KW, label_3class==Orca
+#   FP: cascade said KW, label_3class!=Orca
+#   FN: cascade said NonBio/Bio, label_3class==Orca
+#   TN: cascade said NonBio/Bio, label_3class!=Orca
+# The cascade_output integer encoding lives in
+# orcas_dclde2026/make_cascade_review_csv.py: {2..7} are the KW classes.
+
+OUTCOME_POSITIVE_PRED_VALUES: set[int] | None = {2, 3, 4, 5, 6, 7}
+OUTCOME_POSITIVE_TRUTH_COLUMN: str | None = "label_3class"
+OUTCOME_POSITIVE_TRUTH_VALUES: set[int] | None = {2}
 
 
 # ── Review-page UI knobs ─────────────────────────────────────────────────────

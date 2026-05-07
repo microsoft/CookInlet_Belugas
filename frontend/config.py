@@ -121,6 +121,24 @@ MANUAL_VERIF_STAGE2_LABELS: list[tuple[str, str]] = []
 BACKGROUND_PROB_COLUMN: str | None = PROB_BARS[-1][0] if PROB_BARS else None
 
 
+# ── Optional ground-truth display ────────────────────────────────────────────
+# When the input CSV has ground-truth labels (e.g. evaluating on a labelled
+# test set), list the GT columns here to render them under the prediction.
+# Each entry: (column_name, display_label, {int_value: display_text}).
+
+GROUND_TRUTH_COLUMNS: list[tuple[str, str, dict[int, str]]] = []
+
+
+# ── Optional binary confusion-matrix filter ──────────────────────────────────
+# When all three are set, the review page exposes a TP/FP/TN/FN multiselect.
+# A row is "positive prediction" when PRED_LABEL_COLUMN ∈ POSITIVE_PRED_VALUES,
+# and "positive truth" when POSITIVE_TRUTH_COLUMN ∈ POSITIVE_TRUTH_VALUES.
+
+OUTCOME_POSITIVE_PRED_VALUES: set[int] | None = None
+OUTCOME_POSITIVE_TRUTH_COLUMN: str | None = None
+OUTCOME_POSITIVE_TRUTH_VALUES: set[int] | None = None
+
+
 # ── Review-page UI knobs ─────────────────────────────────────────────────────
 
 BACKUP_EVERY_N_SAVES: int = 5

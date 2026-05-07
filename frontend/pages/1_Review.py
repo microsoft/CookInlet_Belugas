@@ -72,11 +72,30 @@ for k, v in DEFAULTS.items():
 # ── Filtering ────────────────────────────────────────────────────────────────
 
 
+def _outcome_predicates(df: pd.DataFrame):
+    """Return (pred_pos, truth_pos) boolean Series, or (None, None) if the
+    confusion-matrix filter isn't configured for this profile / CSV."""
+    oc_pred = getattr(config, "OUTCOME_POSITIVE_PRED_VALUES", None)
+    oc_truth_col = getattr(config, "OUTCOME_POSITIVE_TRUTH_COLUMN", None)
+    oc_truth_vals = getattr(config, "OUTCOME_POSITIVE_TRUTH_VALUES", None)
+    if (
+        not oc_pred
+        or not oc_truth_col
+        or not oc_truth_vals
+        or oc_truth_col not in df.columns
+    ):
+        return None, None
+    pred_pos = df[config.PRED_LABEL_COLUMN].astype(int).isin(list(oc_pred))
+    truth_pos = df[oc_truth_col].astype(int).isin(list(oc_truth_vals))
+    return pred_pos, truth_pos
+
+
 def _compute_valid_idx(
     df: pd.DataFrame,
     only_unverified: bool,
     pred_filter: list[str],
     prob_range: tuple[float, float] | None,
+    outcome_filter: list[str] | None,
 ) -> list[int]:
     mask = pd.Series(True, index=df.index)
     if only_unverified:
@@ -97,7 +116,37 @@ def _compute_valid_idx(
         prob_whale = 1.0 - df[bg_col].astype(float)
         lo, hi = prob_range
         mask &= (prob_whale >= lo) & (prob_whale <= hi)
+    if outcome_filter:
+        pred_pos, truth_pos = _outcome_predicates(df)
+        if pred_pos is not None and truth_pos is not None:
+            outcome_mask = pd.Series(False, index=df.index)
+            if "TP" in outcome_filter:
+                outcome_mask |= pred_pos & truth_pos
+            if "FP" in outcome_filter:
+                outcome_mask |= pred_pos & ~truth_pos
+            if "TN" in outcome_filter:
+                outcome_mask |= ~pred_pos & ~truth_pos
+            if "FN" in outcome_filter:
+                outcome_mask |= ~pred_pos & truth_pos
+            mask &= outcome_mask
     return df.index[mask].tolist()
+
+
+def _row_outcome(row, df: pd.DataFrame) -> str | None:
+    """Compute TP/FP/TN/FN for a single row, or None if not configured."""
+    oc_pred = getattr(config, "OUTCOME_POSITIVE_PRED_VALUES", None)
+    oc_truth_col = getattr(config, "OUTCOME_POSITIVE_TRUTH_COLUMN", None)
+    oc_truth_vals = getattr(config, "OUTCOME_POSITIVE_TRUTH_VALUES", None)
+    if (
+        not oc_pred
+        or not oc_truth_col
+        or not oc_truth_vals
+        or oc_truth_col not in df.columns
+    ):
+        return None
+    pred_pos = int(row[config.PRED_LABEL_COLUMN]) in oc_pred
+    truth_pos = int(row[oc_truth_col]) in oc_truth_vals
+    return ("T" if pred_pos == truth_pos else "F") + ("P" if pred_pos else "N")
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -126,7 +175,30 @@ with st.sidebar:
     else:
         prob_range = None
 
-valid_idx = _compute_valid_idx(df, only_unverified, pred_filter, prob_range)
+    _oc_pred = getattr(config, "OUTCOME_POSITIVE_PRED_VALUES", None)
+    _oc_truth_col = getattr(config, "OUTCOME_POSITIVE_TRUTH_COLUMN", None)
+    _oc_truth_vals = getattr(config, "OUTCOME_POSITIVE_TRUTH_VALUES", None)
+    _outcome_enabled = bool(
+        _oc_pred and _oc_truth_col and _oc_truth_vals and _oc_truth_col in df.columns
+    )
+    if _outcome_enabled:
+        outcome_filter = st.multiselect(
+            "Outcome (vs ground truth)",
+            options=["TP", "FP", "TN", "FN"],
+            default=["TP", "FP", "TN", "FN"],
+            help=(
+                "Binary cascade-level outcome. Positive prediction = "
+                f"{config.PRED_LABEL_COLUMN} ∈ {sorted(_oc_pred or set())}; "
+                f"positive truth = {_oc_truth_col} ∈ "
+                f"{sorted(_oc_truth_vals or set())}."
+            ),
+        )
+    else:
+        outcome_filter = None
+
+valid_idx = _compute_valid_idx(
+    df, only_unverified, pred_filter, prob_range, outcome_filter
+)
 
 with st.sidebar:
     st.caption(f"{len(valid_idx):,} of {len(df):,} rows match filters")
@@ -341,6 +413,22 @@ with col_meta:
     pred_label = config.PRED_LABELS.get(pred, "?")
     st.markdown(f"#### `{pred_label}`")
 
+    for _gt_col, _gt_label, _gt_map in getattr(config, "GROUND_TRUTH_COLUMNS", []):
+        if _gt_col in df.columns:
+            try:
+                _gt_int = int(row[_gt_col])
+            except (TypeError, ValueError):
+                continue
+            _gt_text = _gt_map.get(_gt_int, str(_gt_int))
+            st.markdown(f"**{_gt_label}**: `{_gt_text}`")
+
+    _outcome_str = _row_outcome(row, df)
+    if _outcome_str is not None:
+        _outcome_color = {"TP": "🟢", "TN": "🟢", "FP": "🔴", "FN": "🔴"}.get(
+            _outcome_str, "⚪"
+        )
+        st.markdown(f"**Outcome**: {_outcome_color} `{_outcome_str}`")
+
     current = (str(row[config.MANUAL_VERIF_COLUMN]) or "").strip()
     st.markdown(f"**Manual verif**: `{current or 'unverified'}`")
 
@@ -376,7 +464,7 @@ with col_meta:
                 )
                 if not _needs_stage2:
                     new_valid = _compute_valid_idx(
-                        df, only_unverified, pred_filter, prob_range
+                        df, only_unverified, pred_filter, prob_range, outcome_filter
                     )
                     if row_idx not in new_valid:
                         next_after = next((i for i in new_valid if i > row_idx), None)
@@ -432,7 +520,7 @@ with col_meta:
                         msg += f"  · backup → {backup.name}"
                     st.toast(msg, icon="✅")
                     new_valid = _compute_valid_idx(
-                        df, only_unverified, pred_filter, prob_range
+                        df, only_unverified, pred_filter, prob_range, outcome_filter
                     )
                     if row_idx not in new_valid:
                         next_after = next((i for i in new_valid if i > row_idx), None)

@@ -72,7 +72,7 @@ with st.sidebar:
     discovered = _discover_csvs()
     options = list(discovered)
     default_idx: int | None = None
-    if config.DEFAULT_CSV:
+    if config.DEFAULT_CSV and os.path.isfile(config.DEFAULT_CSV):
         if config.DEFAULT_CSV not in options:
             options.insert(0, config.DEFAULT_CSV)
         default_idx = options.index(config.DEFAULT_CSV)

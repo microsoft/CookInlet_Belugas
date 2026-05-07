@@ -46,6 +46,8 @@ HIGHPASS_CUTOFF_HZ: float = 300.0
 EXPANDED_VIEW_SEC: float = 10.0
 SEGMENT_VIEW_SEC: float = 2.0
 N_MELS: int = 128
+N_FFT: int = 2048
+HOP_LENGTH: int = 512
 TOP_DB: float = 80.0
 PLAYBACK_SAMPLE_RATE: int = 44100  # browser-friendly resample target
 

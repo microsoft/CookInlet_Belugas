@@ -82,8 +82,11 @@ def compute_expanded_spectrogram(
         load_start = max(0, int((start_s - pad) * sr))
         load_end = min(info.frames, int((end_s + pad) * sr))
         data, _ = sf.read(
-            str(p), start=load_start, stop=load_end,
-            always_2d=False, dtype="float32",
+            str(p),
+            start=load_start,
+            stop=load_end,
+            always_2d=False,
+            dtype="float32",
         )
         if data.ndim > 1:
             data = data.mean(axis=1)
@@ -91,8 +94,12 @@ def compute_expanded_spectrogram(
             data = _highpass(data, sr)
 
         S = librosa.feature.melspectrogram(
-            y=data, sr=sr, n_mels=config.N_MELS,
-            n_fft=2048, hop_length=512, fmax=sr / 2,
+            y=data,
+            sr=sr,
+            n_mels=config.N_MELS,
+            n_fft=config.N_FFT,
+            hop_length=config.HOP_LENGTH,
+            fmax=sr / 2,
         )
         S_db = librosa.power_to_db(S, ref=np.max, top_db=config.TOP_DB)
 
@@ -123,8 +130,12 @@ def compute_segment_spectrogram(
         if highpass:
             data = _highpass(data, sr)
         S = librosa.feature.melspectrogram(
-            y=data, sr=sr, n_mels=config.N_MELS,
-            n_fft=2048, hop_length=512, fmax=sr / 2,
+            y=data,
+            sr=sr,
+            n_mels=config.N_MELS,
+            n_fft=config.N_FFT,
+            hop_length=config.HOP_LENGTH,
+            fmax=sr / 2,
         )
         return librosa.power_to_db(S, ref=np.max, top_db=config.TOP_DB)
     except Exception:
@@ -149,7 +160,9 @@ def apply_audio_processing(
         audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
 
     if highpass:
-        b, a = sp_signal.butter(2, config.HIGHPASS_CUTOFF_HZ / (target_sr / 2), btype="high")  # type: ignore[misc]
+        b, a = sp_signal.butter(
+            2, config.HIGHPASS_CUTOFF_HZ / (target_sr / 2), btype="high"
+        )  # type: ignore[misc]
         audio = sp_signal.filtfilt(b, a, audio).astype(np.float32)
 
     if noise_reduction:
@@ -170,9 +183,9 @@ def apply_audio_processing(
     mask = np.abs(audio) > threshold
     if np.any(mask):
         audio[mask] = np.sign(audio[mask]) * (
-            threshold + (1.0 - threshold) * np.tanh(
-                (np.abs(audio[mask]) - threshold) / (1.0 - threshold)
-            )
+            threshold
+            + (1.0 - threshold)
+            * np.tanh((np.abs(audio[mask]) - threshold) / (1.0 - threshold))
         )
 
     return np.clip(audio, -1.0, 1.0).astype(np.float32), target_sr

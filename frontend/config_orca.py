@@ -35,12 +35,17 @@ DEFAULT_CSV: str | None = os.environ.get("DEFAULT_CSV") or None
 
 
 # ── Audio / spectrogram ──────────────────────────────────────────────────────
+# Match the cached .npy spectrogram parameters from
+# orcas_dclde2026/data/data_config.yaml so the y-axis frequency labels and the
+# HPF-recomputed spec line up with the on-disk spec.
 
-SAMPLE_RATE: int = 16000
+SAMPLE_RATE: int = 24000
 HIGHPASS_CUTOFF_HZ: float = 300.0
 EXPANDED_VIEW_SEC: float = 10.0
 SEGMENT_VIEW_SEC: float = 3.0
-N_MELS: int = 128
+N_MELS: int = 256
+N_FFT: int = 1024
+HOP_LENGTH: int = 128
 TOP_DB: float = 80.0
 PLAYBACK_SAMPLE_RATE: int = 44100
 

@@ -29,9 +29,7 @@ def _discover_csvs() -> list[str]:
     """List candidate prediction CSVs from INFERENCE_DIR."""
     if config.INFERENCE_DIR is None or not config.INFERENCE_DIR.is_dir():
         return []
-    return sorted(
-        str(p) for p in config.INFERENCE_DIR.iterdir() if p.suffix == ".csv"
-    )
+    return sorted(str(p) for p in config.INFERENCE_DIR.iterdir() if p.suffix == ".csv")
 
 
 with st.sidebar:
@@ -39,29 +37,33 @@ with st.sidebar:
 
     discovered = _discover_csvs()
     options = list(discovered)
-    if config.DEFAULT_CSV and config.DEFAULT_CSV not in options:
-        options.insert(0, config.DEFAULT_CSV)
+    default_idx: int | None = None
+    if config.DEFAULT_CSV:
+        if config.DEFAULT_CSV not in options:
+            options.insert(0, config.DEFAULT_CSV)
+        default_idx = options.index(config.DEFAULT_CSV)
 
     if options:
         selected = st.selectbox(
             "Select",
             options=options,
-            index=0,
+            index=default_idx,
             format_func=lambda p: os.path.basename(p),
+            placeholder="Choose a CSV…",
         )
     else:
         selected = None
         st.info(
-            "Set `INFERENCE_DIR` and/or `DEFAULT_CSV` env vars, "
-            "or paste a path below."
+            "Set `INFERENCE_DIR` and/or `DEFAULT_CSV` env vars, or paste a path below."
         )
 
-    csv_path = st.text_input(
+    typed = st.text_input(
         "Or enter a path",
-        value=selected or "",
+        value="",
         key="csv_path_input",
         placeholder="/path/to/predictions.csv",
     )
+    csv_path = typed or selected or ""
 
     if not csv_path:
         st.stop()
@@ -70,10 +72,7 @@ with st.sidebar:
         st.stop()
 
     reviewed = review_path_for(csv_path)
-    if (
-        "df" not in st.session_state
-        or st.session_state.get("loaded_csv") != csv_path
-    ):
+    if "df" not in st.session_state or st.session_state.get("loaded_csv") != csv_path:
         source = str(reviewed) if reviewed.exists() else csv_path
         st.session_state["df"] = load_predictions(source).copy()
         st.session_state["loaded_csv"] = csv_path

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import streamlit as st
 import config
 
 REVIEW_DIR = Path(__file__).parent / "reviews"
+SAVE_MAX_ATTEMPTS = 5
 
 
 @st.cache_data(show_spinner=False)
@@ -48,14 +50,37 @@ def review_path_for(input_csv: str) -> Path:
 
 
 def save_reviews(reviewed_path: Path, df: pd.DataFrame) -> None:
-    """Atomic-write the full reviewed dataframe."""
+    """Atomic-write the full reviewed dataframe.
+
+    Retries the os.replace step on transient OSErrors (EBUSY, locked
+    files from sync agents / editors / antivirus). On final failure
+    cleans up the tmp file and re-raises so the caller can surface a
+    user-visible toast.
+    """
     reviewed_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         prefix=".tmp_", suffix=".csv", dir=str(reviewed_path.parent)
     )
     os.close(fd)
-    df.to_csv(tmp, index=False)
-    os.replace(tmp, reviewed_path)
+    try:
+        df.to_csv(tmp, index=False)
+        last_err: OSError | None = None
+        for attempt in range(SAVE_MAX_ATTEMPTS):
+            try:
+                os.replace(tmp, reviewed_path)
+                return
+            except OSError as e:
+                last_err = e
+                if attempt + 1 < SAVE_MAX_ATTEMPTS:
+                    time.sleep(0.1 * (2**attempt))
+        if last_err is not None:
+            raise last_err
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def backup_reviews(reviewed_path: Path) -> Path:

@@ -8,6 +8,7 @@ their shortcuts) is configured in `frontend/config.py`.
 
 from __future__ import annotations
 
+import bisect
 import sys
 from pathlib import Path
 
@@ -205,11 +206,17 @@ valid_idx = _compute_valid_idx(
 with st.sidebar:
     st.caption(f"{len(valid_idx):,} of {len(df):,} rows match filters")
 
+_auto_advance = getattr(config, "AUTO_ADVANCE_ON_LABEL", True)
+_current_row = st.session_state["row_idx"]
+
+if not _auto_advance and _current_row not in valid_idx:
+    bisect.insort(valid_idx, _current_row)
+
 if not valid_idx:
     st.warning("No rows match the current filters.")
     st.stop()
 
-if st.session_state["row_idx"] not in valid_idx:
+if _current_row not in valid_idx:
     st.session_state["row_idx"] = valid_idx[0]
     st.rerun()
 

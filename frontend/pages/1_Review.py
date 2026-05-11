@@ -569,7 +569,10 @@ with col_meta:
     st.subheader("Probabilities")
     for col_name, display_label, _ in config.PROB_BARS:
         if col_name in df.columns:
-            p = float(row[col_name])
+            raw = row[col_name]
+            if pd.isna(raw):
+                continue
+            p = float(raw)
             st.progress(min(max(p, 0.0), 1.0), text=f"{display_label}: {p:.3f}")
 
     st.caption(f"audio: `{audio_basename}` · {start_s}s–{end_s}s")

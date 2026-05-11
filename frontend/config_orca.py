@@ -128,10 +128,20 @@ PRED_TITLE_COLORS: dict[int, str] = {
     7: "#8b4513",  # OKW — brown
 }
 
-# The cascade CSV stores only the calibrated max-confidence; per-class
-# probabilities are not saved by cascade_eval.py. Keep PROB_BARS empty so the
-# Review page skips the probability slider and the per-class bar list.
-PROB_BARS: list[tuple[str, str, str]] = []
+# Per-class probabilities emitted by cascade_eval.py into
+# cascade_predictions_with_probs.csv: 3 stage-1 (uncalibrated) + 5 stage-2
+# (temperature-calibrated). Review page skips entries whose column is missing,
+# so older review CSVs without these columns still render (no bars).
+PROB_BARS: list[tuple[str, str, str]] = [
+    ("prob_NonBio", "NonBio (stage 1)", "#666666"),
+    ("prob_Bio", "Bio (stage 1)", "#1a6b1a"),
+    ("prob_Orca", "Orca (stage 1)", "#5b0080"),
+    ("prob_SRKW", "SRKW (stage 2 cal.)", "#b34700"),
+    ("prob_TKW", "TKW (stage 2 cal.)", "#1f4e79"),
+    ("prob_SAR", "SAR (stage 2 cal.)", "#cc0066"),
+    ("prob_NRKW", "NRKW (stage 2 cal.)", "#006666"),
+    ("prob_OKW", "OKW (stage 2 cal.)", "#8b4513"),
+]
 BACKGROUND_PROB_COLUMN: str | None = None
 
 

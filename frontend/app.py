@@ -106,6 +106,14 @@ with st.sidebar:
         st.stop()
 
     reviewed = latest_review_path(csv_path)
+
+    # Guard: warn if loading the original when a reviewed version exists
+    if reviewed and ("df" not in st.session_state or st.session_state.get("loaded_csv") != csv_path):
+        st.warning(
+            f"⚠️ A reviewed version already exists: **{reviewed.name}**\n\n"
+            "Annotations will be loaded from the reviewed file automatically."
+        )
+
     if "df" not in st.session_state or st.session_state.get("loaded_csv") != csv_path:
         source = str(reviewed) if reviewed else csv_path
         st.session_state["df"] = load_predictions(source).copy()
@@ -126,10 +134,10 @@ st.markdown(
     Open the **Review** page from the sidebar to step through spectrogram
     predictions, listen to audio, and assign labels.
 
-    Reviewed labels are saved to
-    `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` and never
-    overwrite the source CSV. A timestamped backup is written every few
-    saves under `reviews/backups/`.
+    Reviewed labels are saved to a single file
+    `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` that is
+    overwritten on every save. The source CSV is never modified. When you
+    reload, the app automatically resumes from the reviewed file.
     """
 )
 

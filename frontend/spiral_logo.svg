@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220" role="img" aria-label="SPIRAL — Sound Pipeline Inference Review and Acoustic Logging">
+  <title>SPIRAL — Sound Pipeline Inference Review &amp; Acoustic Logging</title>
+  <defs>
+    <linearGradient id="waveGrad" x1="240" y1="40" x2="380" y2="180" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0891b2"/>
+      <stop offset="50%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#db2777"/>
+    </linearGradient>
+    <linearGradient id="bgFade" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0891b2" stop-opacity="0.18"/>
+      <stop offset="50%" stop-color="#7c3aed" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#db2777" stop-opacity="0.18"/>
+    </linearGradient>
+    <linearGradient id="bgFadeSoft" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0891b2" stop-opacity="0.08"/>
+      <stop offset="50%" stop-color="#7c3aed" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#db2777" stop-opacity="0.08"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Wave background -->
+  <g aria-hidden="true">
+    <path d="M 0 110 Q 50 60, 100 110 T 200 110 T 300 110 T 400 110 T 500 110 T 600 110 T 700 110 T 800 110"
+          fill="none" stroke="url(#bgFade)" stroke-width="1.2"/>
+    <path d="M 0 110 Q 40 145, 80 110 T 160 110 T 240 110 T 320 110 T 400 110 T 480 110 T 560 110 T 640 110 T 720 110 T 800 110"
+          fill="none" stroke="url(#bgFadeSoft)" stroke-width="1"/>
+    <path d="M 0 110 Q 75 85, 150 110 T 300 110 T 450 110 T 600 110 T 750 110 T 800 110"
+          fill="none" stroke="url(#bgFadeSoft)" stroke-width="0.8"/>
+  </g>
+
+  <!-- Spiral mark -->
+  <g transform="translate(130,110)" stroke="url(#waveGrad)" fill="none" stroke-linecap="round">
+    <path d="M 85.00 0.00 A 82.11 82.11 0 0 1 0.00 79.21" stroke-width="2.00"/>
+    <path d="M 0.00 79.21 A 76.32 76.32 0 0 1 -73.43 0.00" stroke-width="2.27"/>
+    <path d="M -73.43 0.00 A 70.54 70.54 0 0 1 -0.00 -67.64" stroke-width="2.54"/>
+    <path d="M -0.00 -67.64 A 64.75 64.75 0 0 1 61.86 -0.00" stroke-width="2.81"/>
+    <path d="M 61.86 -0.00 A 58.96 58.96 0 0 1 0.00 56.07" stroke-width="3.08"/>
+    <path d="M 0.00 56.07 A 53.18 53.18 0 0 1 -50.29 0.00" stroke-width="3.35"/>
+    <path d="M -50.29 0.00 A 47.39 47.39 0 0 1 -0.00 -44.50" stroke-width="3.62"/>
+    <path d="M -0.00 -44.50 A 41.61 41.61 0 0 1 38.71 -0.00" stroke-width="3.88"/>
+    <path d="M 38.71 -0.00 A 35.82 35.82 0 0 1 0.00 32.93" stroke-width="4.15"/>
+    <path d="M 0.00 32.93 A 30.04 30.04 0 0 1 -27.14 0.00" stroke-width="4.42"/>
+    <path d="M -27.14 0.00 A 24.25 24.25 0 0 1 -0.00 -21.36" stroke-width="4.69"/>
+    <path d="M -0.00 -21.36 A 18.46 18.46 0 0 1 15.57 -0.00" stroke-width="4.96"/>
+    <path d="M 15.57 -0.00 A 12.68 12.68 0 0 1 -0.00 9.79" stroke-width="5.23"/>
+    <path d="M -0.00 9.79 A 6.89 6.89 0 0 1 -4.00 0.00" stroke-width="5.50"/>
+    <circle cx="-4" cy="0" r="3.5" fill="#db2777" stroke="none"/>
+  </g>
+
+  <!-- Wordmark -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="245" y="108" font-size="48" font-weight="500" letter-spacing="6" fill="#1a1a1a">SPIRAL</text>
+    <text x="245" y="134" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="11" letter-spacing="3" fill="#666666">SOUND PIPELINE INFERENCE REVIEW &amp; ACOUSTIC LOGGING</text>
+  </g>
+</svg>

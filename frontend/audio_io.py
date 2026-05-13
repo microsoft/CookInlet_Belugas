@@ -93,16 +93,26 @@ def compute_expanded_spectrogram(
         )
         if data.ndim > 1:
             data = data.mean(axis=1)
+
+        # Resample to config.SAMPLE_RATE before STFT so n_fft/hop give consistent
+        # time/freq resolution across files with different native sample rates;
+        # otherwise high-SR files leave the bottom mel bins under-resolved.
+        if sr != config.SAMPLE_RATE:
+            spec_data = librosa.resample(data, orig_sr=sr, target_sr=config.SAMPLE_RATE)
+        else:
+            spec_data = data
+        spec_sr = config.SAMPLE_RATE
+
         if highpass:
-            data = _highpass(data, sr)
+            spec_data = _highpass(spec_data, spec_sr)
 
         S = librosa.feature.melspectrogram(
-            y=data,
-            sr=sr,
+            y=spec_data,
+            sr=spec_sr,
             n_mels=config.N_MELS,
             n_fft=config.N_FFT,
             hop_length=config.HOP_LENGTH,
-            fmax=sr / 2,
+            fmax=spec_sr / 2,
         )
         S_db = librosa.power_to_db(S, ref=np.max, top_db=config.TOP_DB)
 
@@ -131,6 +141,9 @@ def compute_segment_spectrogram(
     if data is None or sr is None:
         return None
     try:
+        if sr != config.SAMPLE_RATE:
+            data = librosa.resample(data, orig_sr=sr, target_sr=config.SAMPLE_RATE)
+            sr = config.SAMPLE_RATE
         if highpass:
             data = _highpass(data, sr)
         S = librosa.feature.melspectrogram(

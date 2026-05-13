@@ -154,10 +154,10 @@ MANUAL_VERIF_STAGE2_LABELS: list[tuple[str, str]] = [
     ("SRKW", "s"),
     ("TKW", "t"),
     ("SAR", "a"),
-    ("NRKW", "r"),
+    ("NRKW", "n"),
     ("OKW", "k"),
     ("Unassigned", "z"),
-    ("Unsure", "q"),
+    ("Unsure", "u"),
 ]
 
 

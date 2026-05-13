@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import streamlit_shortcuts
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -489,7 +490,8 @@ if st.session_state["view_expanded"]:
             audio_basename, start_s, end_s, _playback_gain, _hpf, _nr
         )
         if exp_bytes is not None:
-            st.audio(exp_bytes, format="audio/wav")
+            with st.container(key="audio_active"):
+                st.audio(exp_bytes, format="audio/wav")
         else:
             st.caption("⚠️ Audio unavailable.")
 else:
@@ -497,9 +499,39 @@ else:
         audio_basename, start_s, end_s, _playback_gain, _hpf, _nr
     )
     if seg_bytes is not None:
-        st.audio(seg_bytes, format="audio/wav")
+        with st.container(key="audio_active"):
+            st.audio(seg_bytes, format="audio/wav")
     else:
         st.caption(f"⚠️ Audio unavailable for `{audio_basename}`")
+
+# Space-bar plays/pauses whichever audio is wrapped in `.st-key-audio_active`
+# (the 10-s expanded player when expanded view is on, otherwise the 3-s
+# segment). One-time install via a window-level flag so the listener isn't
+# stacked on every fragment rerun.
+components.html(
+    """
+    <script>
+    (function() {
+        const doc = window.parent.document;
+        const w = window.parent.window;
+        if (w.__spaceBarAudioInit) return;
+        doc.addEventListener('keydown', function(e) {
+            if (e.code !== 'Space' && e.key !== ' ') return;
+            const t = e.target || {};
+            const tag = (t.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || t.isContentEditable) return;
+            const audio = doc.querySelector('.st-key-audio_active audio');
+            if (!audio) return;
+            e.preventDefault();
+            if (audio.paused) { audio.play(); } else { audio.pause(); }
+        });
+        w.__spaceBarAudioInit = true;
+    })();
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 _nav_pad_l, nav_prev, nav_next, nav_count, _nav_pad_r = st.columns([1.5, 1, 1, 2.5, 1.5])
 with nav_prev:
@@ -532,7 +564,7 @@ with nav_count:
     st.markdown(
         f"<div style='text-align:left; padding-top:0.4rem; padding-left:0.5rem'>"
         f"Position <b>{pos + 1}</b> of "
-        f"{len(valid_idx):,} <span style='color:#888'>(row {row_idx + 1} in CSV)</span></div>",
+        f"{len(valid_idx):,} <span style='color:#888'>(row {row_idx + 2} in CSV)</span></div>",
         unsafe_allow_html=True,
     )
 
@@ -585,25 +617,56 @@ def _verification_panel():
     with col_btn:
         st.subheader("Manual verification")
         btn_cols = st.columns(2)
+        # When the stage-2 panel is visible, any stage-1 shortcut that collides
+        # with a stage-2 label's shortcut yields to stage-2 (the user is in
+        # subtype-selection mode), so we drop the keyboard binding on the
+        # conflicting stage-1 button but keep it clickable.
+        _s2_visible = (
+            getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+            and getattr(config, "MANUAL_VERIF_STAGE2_COLUMN") in df.columns
+            and current == getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+            and getattr(config, "MANUAL_VERIF_STAGE2_LABELS", [])
+        )
+        _s2_shortcut_set = (
+            {sc for _, sc in getattr(config, "MANUAL_VERIF_STAGE2_LABELS", []) or []}
+            if _s2_visible
+            else set()
+        )
         for i, (label, shortcut) in enumerate(config.MANUAL_VERIF_LABELS):
             col = btn_cols[i % 2]
             with col:
                 btn_type = "primary" if label == current else "secondary"
+                # streamlit_shortcuts persists bindings in a global JS map via
+                # Object.assign — entries are never deleted, only overwritten by
+                # button key. So a stale `lbl_Unsure: 'u'` from a prior render
+                # (before stage-2 was visible) would shadow stage-2's `u` binding.
+                # Re-register this same button key with a non-matching sentinel
+                # to release the keystroke for stage-2.
+                _effective_shortcut = (
+                    "unbound" if shortcut in _s2_shortcut_set else shortcut
+                )
                 if streamlit_shortcuts.shortcut_button(
                     label,
-                    shortcut,
+                    _effective_shortcut,
                     hint=False,
                     type=btn_type,
                     key=f"lbl_{label}",
                     use_container_width=True,
                 ):
                     df.at[row_idx, config.MANUAL_VERIF_COLUMN] = label
+                    # If stage-1 moved off the stage-2 trigger (e.g. Orca →
+                    # Bio), clear any stale stage-2 ecotype so it can't linger
+                    # invisibly behind a non-Orca stage-1 label.
+                    _s2c = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+                    _s2t = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+                    if _s2c and _s2c in df.columns and label != _s2t:
+                        df.at[row_idx, _s2c] = ""
                     labeled = st.session_state.get("labeled_rows", [])
                     if row_idx not in labeled:
                         labeled.append(row_idx)
                     st.session_state["labeled_rows"] = labeled
                     st.session_state["unsaved_count"] += 1
-                    msg = f"Row {row_idx}: {label}"
+                    msg = f"Row {row_idx + 2}: {label}"
                     if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
                         backup = save_backup(csv_path, df)
                         st.session_state["last_backup"] = backup.name
@@ -642,8 +705,11 @@ def _verification_panel():
         with _clear_col:
             if st.button("Clear", use_container_width=True, key="lbl_clear"):
                 df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
+                _s2c = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+                if _s2c and _s2c in df.columns:
+                    df.at[row_idx, _s2c] = ""
                 st.session_state["unsaved_count"] += 1
-                st.toast(f"Cleared row {row_idx} (unsaved)", icon="🧹")
+                st.toast(f"Cleared row {row_idx + 2} (unsaved)", icon="🧹")
                 st.rerun(scope="fragment")
 
         _stage2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
@@ -674,7 +740,7 @@ def _verification_panel():
                     ):
                         df.at[row_idx, _stage2_col] = label2
                         st.session_state["unsaved_count"] += 1
-                        msg = f"Row {row_idx} subtype: {label2}"
+                        msg = f"Row {row_idx + 2} subtype: {label2}"
                         if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
                             backup = save_backup(csv_path, df)
                             st.session_state["last_backup"] = backup.name
@@ -706,7 +772,7 @@ def _verification_panel():
             if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
                 df.at[row_idx, _stage2_col] = ""
                 st.session_state["unsaved_count"] += 1
-                st.toast(f"Cleared subtype on row {row_idx} (unsaved)", icon="🧹")
+                st.toast(f"Cleared subtype on row {row_idx + 2} (unsaved)", icon="🧹")
                 st.rerun(scope="fragment")
 
 

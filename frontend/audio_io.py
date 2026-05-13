@@ -15,6 +15,7 @@ from typing import Optional
 import librosa
 import numpy as np
 import soundfile as sf
+import streamlit as st
 from scipy import signal as sp_signal
 
 import config
@@ -32,6 +33,7 @@ def _resolve_wav(audio_basename: str) -> Optional[Path]:
     return None
 
 
+@st.cache_data(show_spinner=False, max_entries=128)
 def load_audio_slice(
     audio_basename: str, start_s: float, end_s: float
 ) -> tuple[Optional[np.ndarray], Optional[int]]:
@@ -61,6 +63,7 @@ def _highpass(data: np.ndarray, sr: int) -> np.ndarray:
     return sp_signal.filtfilt(b, a, data).astype(np.float32)
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
 def compute_expanded_spectrogram(
     audio_basename: str,
     start_s: float,
@@ -115,6 +118,7 @@ def compute_expanded_spectrogram(
         return None
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
 def compute_segment_spectrogram(
     audio_basename: str,
     start_s: float,
@@ -150,30 +154,34 @@ def apply_audio_processing(
     noise_reduction: bool = False,
 ) -> tuple[np.ndarray, int]:
     """Apply gain → optional HPF → optional spectral-subtraction noise
-    reduction → soft-clip. Resamples to `PLAYBACK_SAMPLE_RATE` for browser
-    compatibility. Returns (processed, out_sr).
+    reduction → soft-clip. Keeps the source sample rate (no resampling — the
+    browser plays WAV at any rate natively, and resampling 16 kHz FLAC up to
+    44.1 kHz introduced audible artifacts). Only downsamples if the source
+    SR is above 48 kHz, which would otherwise inflate the WAV size needlessly.
+    Returns (processed, out_sr).
     """
     audio = data.astype(np.float32)
 
-    target_sr = config.PLAYBACK_SAMPLE_RATE
-    if sr != target_sr:
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+    out_sr = sr
+    if sr > 48000:
+        out_sr = 48000
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=out_sr)
 
     if highpass:
         b, a = sp_signal.butter(
-            2, config.HIGHPASS_CUTOFF_HZ / (target_sr / 2), btype="high"
+            2, config.HIGHPASS_CUTOFF_HZ / (out_sr / 2), btype="high"
         )  # type: ignore[misc]
         audio = sp_signal.filtfilt(b, a, audio).astype(np.float32)
 
     if noise_reduction:
-        nperseg = 512
-        _, _, Zxx = sp_signal.stft(audio, fs=target_sr, nperseg=nperseg)
+        nperseg = min(512, max(64, len(audio) // 4))
+        _, _, Zxx = sp_signal.stft(audio, fs=out_sr, nperseg=nperseg)
         magnitude = np.abs(Zxx)
         phase = np.angle(Zxx)
         noise_floor = np.median(magnitude, axis=1, keepdims=True)
         magnitude_clean = np.maximum(magnitude - 0.5 * noise_floor, 0.4 * magnitude)
         _, audio = sp_signal.istft(
-            magnitude_clean * np.exp(1j * phase), fs=target_sr, nperseg=nperseg
+            magnitude_clean * np.exp(1j * phase), fs=out_sr, nperseg=nperseg
         )
         audio = audio.astype(np.float32)
 
@@ -188,11 +196,60 @@ def apply_audio_processing(
             * np.tanh((np.abs(audio[mask]) - threshold) / (1.0 - threshold))
         )
 
-    return np.clip(audio, -1.0, 1.0).astype(np.float32), target_sr
+    return np.clip(audio, -1.0, 1.0).astype(np.float32), out_sr
 
 
 def encode_wav(data: np.ndarray, sr: int) -> bytes:
-    """Encode a numpy float32 array as in-memory WAV bytes for st.audio."""
+    """Encode samples as in-memory PCM-16 WAV for st.audio.
+
+    PCM-16 is the universally-supported WAV subtype; 32-bit float WAV (the
+    previous default) is decoded inconsistently across browsers and can
+    produce audible clicks and pops on playback.
+    """
     buf = io.BytesIO()
-    sf.write(buf, data, sr, format="WAV", subtype="FLOAT")
+    sf.write(buf, data, sr, format="WAV", subtype="PCM_16")
     return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def get_segment_wav_bytes(
+    audio_basename: str,
+    start_s: float,
+    end_s: float,
+    playback_gain: float,
+    highpass: bool,
+    noise_reduction: bool,
+) -> Optional[bytes]:
+    """Cached end-to-end: load segment → process → encode WAV bytes."""
+    data, sr = load_audio_slice(audio_basename, start_s, end_s)
+    if data is None or sr is None:
+        return None
+    processed, out_sr = apply_audio_processing(
+        data, sr,
+        playback_gain=playback_gain,
+        highpass=highpass,
+        noise_reduction=noise_reduction,
+    )
+    return encode_wav(processed, out_sr)
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def get_expanded_wav_bytes(
+    audio_basename: str,
+    start_s: float,
+    end_s: float,
+    playback_gain: float,
+    highpass: bool,
+    noise_reduction: bool,
+) -> Optional[bytes]:
+    """Cached end-to-end: load 10-s window → process → encode WAV bytes."""
+    exp = compute_expanded_spectrogram(audio_basename, start_s, end_s, highpass=False)
+    if exp is None:
+        return None
+    processed, out_sr = apply_audio_processing(
+        exp["audio"], exp["sr"],
+        playback_gain=playback_gain,
+        highpass=highpass,
+        noise_reduction=noise_reduction,
+    )
+    return encode_wav(processed, out_sr)

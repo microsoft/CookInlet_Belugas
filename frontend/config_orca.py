@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 
-_ORCA_REPO_DEFAULT = Path("/home/v-druizlopez/bioacoustics/orcas_dclde2026")
+_ORCA_REPO_DEFAULT = Path("/home/v-manoloc/orcas")
 
 
 def _env_path(name: str) -> Path | None:
@@ -70,7 +70,7 @@ _ECOTYPE_NAMES: dict[int, str] = {
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 AUDIO_ROOT: Path | None = _env_path("AUDIO_ROOT") or Path(
-    "/home/v-druizlopez/shared/v-druizlopez/killer_whales_dclde2026"
+    "/home/v-manoloc/shared/v-druizlopez/killer_whales_dclde2026"
 )
 INFERENCE_DIR: Path | None = _env_path("INFERENCE_DIR")
 EAR_LOG_PATH: Path = _env_path("EAR_LOG_PATH") or (Path(__file__).parent / "EAR.LOG")
@@ -140,6 +140,7 @@ BACKGROUND_PROB_COLUMN: str | None = None
 MANUAL_VERIF_LABELS: list[tuple[str, str]] = [
     ("NonBio", "n"),
     ("Bio", "b"),
+    ("Humpback", "h"),
     ("Orca", "o"),
     ("Unsure", "u"),
 ]

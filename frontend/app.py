@@ -4,6 +4,17 @@ Picks the predictions CSV (auto-discovered from `INFERENCE_DIR` if set,
 overridable via free-text path), loads it once into `session_state`, and
 shows summary metrics. The Review and AL Targets pages then read from
 `session_state` rather than re-loading.
+
+To run:
+conda activate orcas
+cd /home/v-manoloc/CookInlet_Belugas
+git checkout frontend
+Then run:
+export DEFAULT_CSV=/home/v-manoloc/orcas/cascade_predictions_for_review_manoloc.csv
+export APP_PROFILE=orca
+streamlit run /home/v-manoloc/CookInlet_Belugas/frontend/app.py
+
+And open the Network URL, if you want in browser, go to port tab and click on globe symbol
 """
 
 from __future__ import annotations
@@ -16,11 +27,12 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 import config
+from branding import render_logo
 from csv_io import latest_review_path, load_predictions
 
 st.set_page_config(
-    page_title="Bioacoustics Review",
-    page_icon="🐳",
+    page_title="SPIRAL",
+    page_icon="🌀",
     layout="wide",
 )
 
@@ -128,7 +140,7 @@ with st.sidebar:
     unverified = int((df[config.MANUAL_VERIF_COLUMN] == "").sum())
     st.success(f"{len(df):,} rows · {unverified:,} unverified")
 
-st.title("🐳 Bioacoustics Pipeline Review")
+render_logo()
 st.markdown(
     """
     Open the **Review** page from the sidebar to step through spectrogram

@@ -9,12 +9,20 @@ its module-level `matplotlib.use("Agg")` side-effect.
 
 from __future__ import annotations
 
+import io
 from typing import Optional, Sequence
 
 import matplotlib.figure
 import numpy as np
+import streamlit as st
 
 import config
+
+
+@st.cache_data(show_spinner=False, max_entries=256)
+def _load_npy(npy_path: str) -> np.ndarray:
+    """Cached load of a spectrogram .npy file (read-only on disk)."""
+    return np.load(npy_path).astype(np.float32)
 
 NYQUIST = config.SAMPLE_RATE / 2
 
@@ -107,6 +115,7 @@ def render_spectrogram(
     t_markers: Optional[Sequence[float]] = None,
     t_total: Optional[float] = None,
     cmap: str = "magma",
+    date_str: Optional[str] = None,
 ) -> matplotlib.figure.Figure:
     """Render a spectrogram figure with all processing applied.
 
@@ -119,7 +128,7 @@ def render_spectrogram(
     if expanded_spec is not None:
         spec = expanded_spec.astype(np.float32)
     else:
-        spec = np.load(npy_path).astype(np.float32)
+        spec = _load_npy(npy_path)
 
     n_mels = spec.shape[0]
     mel_max = hz_to_mel(NYQUIST)
@@ -159,17 +168,69 @@ def render_spectrogram(
         ax.set_yticks(list(positions))
         ax.set_yticklabels([_tick_label(hz) for hz in labels], fontsize=7)
 
-    ax.set_xlabel("Time (s)" if t_total else "Time frames", fontsize=8)
+    if duration <= 3:
+        x_step = 0.5
+    elif duration <= 12:
+        x_step = 2.0
+    else:
+        x_step = 5.0
+    x_ticks = [round(i * x_step, 6) for i in range(int(duration / x_step) + 1)]
+    if x_ticks and x_ticks[-1] < duration - 1e-6:
+        x_ticks.append(round(duration, 6))
+    x_labels = [f"{t:g}" for t in x_ticks]
+    if x_labels:
+        x_labels[-1] = f"{x_labels[-1]} s"
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels(x_labels, fontsize=7)
+    ax.set_xlabel("")
     ax.set_ylabel(freq_label, fontsize=8)
 
     if t_markers is not None:
         for t in t_markers:
             ax.axvline(x=t, color="red", linewidth=1.2, linestyle="--")
 
-    if pred_label is not None:
-        title = f"pred: {config.PRED_LABELS.get(pred_label, str(pred_label))}"
-        title_color = config.PRED_TITLE_COLORS.get(pred_label, "black")
-        ax.set_title(title, fontsize=9, color=title_color)
+    if date_str:
+        ax.set_title(date_str, fontsize=9, color="#444")
 
     fig.tight_layout()
     return fig
+
+
+@st.cache_data(show_spinner=False, max_entries=128)
+def render_spectrogram_png(
+    npy_path: str,
+    pred_label: Optional[int] = None,
+    scale: str = "mel",
+    auto_contrast: bool = False,
+    noise_reduction: bool = False,
+    spec_gain: float = 1.0,
+    highpass: bool = False,
+    expanded_spec: Optional[np.ndarray] = None,
+    t_markers: Optional[tuple] = None,
+    t_total: Optional[float] = None,
+    cmap: str = "magma",
+    date_str: Optional[str] = None,
+) -> bytes:
+    """Cache the rendered spectrogram as PNG bytes. Use with `st.image`.
+
+    Cache key is the full set of render parameters, so revisiting the same
+    row with the same view settings is a near-instant cache hit instead of
+    a fresh matplotlib figure build.
+    """
+    fig = render_spectrogram(
+        npy_path=npy_path,
+        pred_label=pred_label,
+        scale=scale,
+        auto_contrast=auto_contrast,
+        noise_reduction=noise_reduction,
+        spec_gain=spec_gain,
+        highpass=highpass,
+        expanded_spec=expanded_spec,
+        t_markers=t_markers,
+        t_total=t_total,
+        cmap=cmap,
+        date_str=date_str,
+    )
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=fig.dpi, bbox_inches="tight")
+    return buf.getvalue()

@@ -20,6 +20,12 @@ _RECORDING_LINE = re.compile(
     re.IGNORECASE,
 )
 _FILE_ID_FROM_BASENAME = re.compile(r"^\d+_(\d+)")
+# Fallback: extract YYYYMMDD_HHMMSS (optionally followed by Z for UTC) from
+# anywhere in the basename. Matches names like
+# "DFOCRP.KkHK0R2F-NML1.SM2M-3.20131011_000600Z.flac".
+_DATETIME_FROM_BASENAME = re.compile(
+    r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(Z?)"
+)
 
 
 @lru_cache(maxsize=1)
@@ -36,8 +42,21 @@ def _index() -> dict[int, str]:
 
 
 def recording_date(audio_basename: str) -> Optional[str]:
-    """Return the recording start datetime for a CSV `audio` value, or None."""
+    """Return the recording start datetime for a CSV `audio` value, or None.
+
+    Tries the EAR.LOG lookup first (Cook Inlet format: leading numeric file
+    id). Falls back to parsing a `YYYYMMDD_HHMMSS[Z]` timestamp embedded in
+    the basename (used by the orca dataset filenames).
+    """
     m = _FILE_ID_FROM_BASENAME.match(audio_basename)
-    if not m:
-        return None
-    return _index().get(int(m.group(1)))
+    if m:
+        hit = _index().get(int(m.group(1)))
+        if hit is not None:
+            return hit
+
+    m = _DATETIME_FROM_BASENAME.search(audio_basename)
+    if m:
+        y, mo, d, h, mi, s, z = m.groups()
+        suffix = " UTC" if z else ""
+        return f"{y}-{mo}-{d} {h}:{mi}:{s}{suffix}"
+    return None

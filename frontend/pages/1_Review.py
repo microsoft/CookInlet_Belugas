@@ -19,26 +19,23 @@ import streamlit_shortcuts
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from audio_io import (
-    apply_audio_processing,
     compute_expanded_spectrogram,
     compute_segment_spectrogram,
-    encode_wav,
-    load_audio_slice,
+    get_expanded_wav_bytes,
+    get_segment_wav_bytes,
 )
+from branding import render_logo
+from prefs import init_preferences, save_preferences
 from csv_io import BACKUP_DIR, save_backup, save_reviews
 from ear_log import recording_date
-from spec_render import render_spectrogram
+from spec_render import render_spectrogram_png
 
 
 # ── Visualization-toggle keyboard shortcuts ──────────────────────────────────
 
-_VIS_SHORTCUTS = {
-    "linear_scale": "4",
-    "auto_contrast": "1",
-    "noise_reduction": "3",
-    "view_expanded": "2",
-    "highpass": "p",
-}
+# Visualization/audio toggle keyboard shortcuts were removed: number keys
+# conflicted with typing into the "Jump to position" field, and `p`
+# collided with normal text input.
 
 DEFAULTS = {
     "row_idx": 0,
@@ -52,12 +49,59 @@ DEFAULTS = {
     "spec_gain": 1.0,
     "playback_gain": 1.0,
     "use_viridis": False,
+    "labeled_rows": [],  # recently labeled row indices kept in valid_idx
 }
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
 
-st.title("🔬 Review predictions")
+render_logo()
+
+st.markdown(
+    """
+    <style>
+    /* Tighten gap below the spectrogram (x-axis label removed, only tick
+       labels remain inside the figure, so a larger negative margin is safe). */
+    div[data-testid="stPyplot"] { margin-bottom: -3rem; }
+    /* Pull the audio player up toward the spectrogram; leave room below for
+       the nav buttons. */
+    div[data-testid="stAudio"] {
+        margin-top: -1.25rem;
+        margin-bottom: 0.25rem;
+    }
+    /* Tighten gap below the 5-column Prev/Next/counter nav row (two spacer
+       columns flank the content for horizontal centering) but keep a bit
+       of breathing room above it. */
+    div[data-testid="stHorizontalBlock"]:has(
+        > div[data-testid="stColumn"]:nth-child(5)
+    ):not(:has(> div[data-testid="stColumn"]:nth-child(6))) {
+        margin-top: 0;
+        margin-bottom: -0.75rem;
+    }
+    /* Stage 2 (orca subtype) row: 7 columns. Tighten gaps + button padding
+       and force single-line text so labels like "Unassigned" fit. */
+    div[data-testid="stHorizontalBlock"]:has(
+        > div[data-testid="stColumn"]:nth-child(7)
+    ):not(:has(> div[data-testid="stColumn"]:nth-child(8))) {
+        gap: 0.25rem !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(
+        > div[data-testid="stColumn"]:nth-child(7)
+    ):not(:has(> div[data-testid="stColumn"]:nth-child(8))) button {
+        padding-left: 0.35rem !important;
+        padding-right: 0.35rem !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(
+        > div[data-testid="stColumn"]:nth-child(7)
+    ):not(:has(> div[data-testid="stColumn"]:nth-child(8))) button p {
+        white-space: nowrap;
+        font-size: 0.85rem;
+        margin: 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "df" not in st.session_state:
     st.warning("Load a CSV from the home page sidebar first.")
@@ -68,9 +112,7 @@ csv_path: str = st.session_state["loaded_csv"]
 _rp_str = st.session_state.get("reviewed_path") or ""
 reviewed_path: Path | None = Path(_rp_str) if _rp_str else None
 
-for k, v in DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+init_preferences(DEFAULTS)
 
 
 # ── Filtering ────────────────────────────────────────────────────────────────
@@ -100,6 +142,7 @@ def _compute_valid_idx(
     pred_filter: list[str],
     prob_range: tuple[float, float] | None,
     outcome_filter: list[str] | None,
+    keep_rows: list[int] | None = None,
 ) -> list[int]:
     mask = pd.Series(True, index=df.index)
     if only_unverified:
@@ -111,6 +154,11 @@ def _compute_valid_idx(
             stage2 = df[stage2_col].fillna("").astype(str)
             partial = (stage1 == stage2_trigger) & (stage2 == "")
             unverified = unverified | partial
+        # Always keep recently labeled rows visible for navigation
+        if keep_rows:
+            for idx in keep_rows:
+                if 0 <= idx < len(df):
+                    unverified.iloc[idx] = True
         mask &= unverified
     label_to_int = {v: k for k, v in config.PRED_LABELS.items()}
     pred_ints = [label_to_int[name] for name in pred_filter if name in label_to_int]
@@ -201,7 +249,8 @@ with st.sidebar:
         outcome_filter = None
 
 valid_idx = _compute_valid_idx(
-    df, only_unverified, pred_filter, prob_range, outcome_filter
+    df, only_unverified, pred_filter, prob_range, outcome_filter,
+    keep_rows=st.session_state.get("labeled_rows", []),
 )
 
 with st.sidebar:
@@ -218,43 +267,82 @@ if not valid_idx:
     st.stop()
 
 if _current_row not in valid_idx:
+    # Just update; do NOT call st.rerun() — that would abort the script
+    # mid-sidebar and cause Streamlit to garbage-collect the visualization
+    # widget keys before they render.
     st.session_state["row_idx"] = valid_idx[0]
-    st.rerun()
 
 row_idx = st.session_state["row_idx"]
 row = df.iloc[row_idx]
 pos = valid_idx.index(row_idx)
 
+# Stash valid_idx so the Search/Jump callbacks (which fire before the script
+# runs) can resolve positions and key-column hits without recomputing.
+st.session_state["_valid_idx_cache"] = valid_idx
+
+
+def _on_find_click():
+    """Fired before the script reruns when the user clicks Find."""
+    q = (st.session_state.get("search_query") or "").strip()
+    if not q:
+        return
+    cached_df = st.session_state.get("df")
+    if cached_df is None:
+        return
+    hits = cached_df.index[
+        cached_df[config.KEY_COLUMN]
+        .astype(str)
+        .str.contains(q, case=False, regex=False)
+    ].tolist()
+    if hits:
+        new_row = int(hits[0])
+        st.session_state["row_idx"] = new_row
+        cached_valid = st.session_state.get("_valid_idx_cache", [])
+        if new_row in cached_valid:
+            st.session_state["_jump_input"] = cached_valid.index(new_row) + 1
+        st.toast(
+            f"Found {len(hits)} match(es); jumped to row {new_row}", icon="🔍"
+        )
+    else:
+        st.toast("No match", icon="⚠️")
+
+
+def _on_jump_change():
+    """Fired before the script reruns when the user changes the jump input."""
+    new_jump = st.session_state.get("_jump_input")
+    if new_jump is None:
+        return
+    cached = st.session_state.get("_valid_idx_cache", [])
+    new_pos = int(new_jump) - 1
+    if 0 <= new_pos < len(cached):
+        st.session_state["row_idx"] = cached[new_pos]
+
 with st.sidebar:
     st.subheader("Search")
-    query = st.text_input(
+    st.text_input(
         f"Find by `{config.KEY_COLUMN}` (partial)",
         key="search_query",
         placeholder="e.g. 120_00038476",
     )
-    if st.button("Find", key="btn_find") and query.strip():
-        q = query.strip()
-        hits = df.index[
-            df[config.KEY_COLUMN].astype(str).str.contains(q, case=False, regex=False)
-        ].tolist()
-        if hits:
-            st.session_state["row_idx"] = int(hits[0])
-            st.toast(f"Found {len(hits)} match(es); jumped to row {hits[0]}", icon="🔍")
-            st.rerun()
-        else:
-            st.warning("No match")
+    st.button("Find", key="btn_find", on_click=_on_find_click)
 
     st.subheader("Navigation")
-    jump = st.number_input(
+    # Apply any deferred jump-input value queued by Prev/Next on the previous
+    # rerun. We must do this BEFORE instantiating the widget — Streamlit
+    # forbids writing to a widget's session_state key after its widget has
+    # been created in the current run.
+    if "_pending_jump" in st.session_state:
+        st.session_state["_jump_input"] = st.session_state.pop("_pending_jump")
+    elif "_jump_input" not in st.session_state:
+        st.session_state["_jump_input"] = pos + 1
+    st.number_input(
         "Jump to position in filter",
         min_value=1,
         max_value=len(valid_idx),
-        value=pos + 1,
         step=1,
+        key="_jump_input",
+        on_change=_on_jump_change,
     )
-    if int(jump) - 1 != pos:
-        st.session_state["row_idx"] = valid_idx[int(jump) - 1]
-        st.rerun()
 
     st.subheader("Visualization")
     st.radio(
@@ -267,8 +355,9 @@ with st.sidebar:
     st.session_state["linear_scale"] = (
         st.session_state["_freq_scale_radio"] == "Linear Hz"
     )
-    st.checkbox("Auto-contrast (1)", key="auto_contrast")
-    st.checkbox("Noise reduction (3)", key="noise_reduction")
+    st.checkbox("10-second context view", key="view_expanded")
+    st.checkbox("Auto-contrast", key="auto_contrast")
+    st.checkbox("Noise reduction", key="noise_reduction")
     st.checkbox("Viridis colormap", key="use_viridis")
     st.slider(
         "Spectrogram gain",
@@ -277,13 +366,11 @@ with st.sidebar:
         step=0.5,
         key="spec_gain",
     )
-    streamlit_shortcuts.add_shortcuts(
-        auto_contrast=_VIS_SHORTCUTS["auto_contrast"],
-        noise_reduction=_VIS_SHORTCUTS["noise_reduction"],
-    )
 
     st.subheader("Audio")
-    st.checkbox(f"High-pass {int(config.HIGHPASS_CUTOFF_HZ)} Hz (p)", key="highpass")
+    st.checkbox(
+        f"High-pass {int(config.HIGHPASS_CUTOFF_HZ)} Hz", key="highpass"
+    )
     st.slider(
         "Playback gain",
         min_value=0.1,
@@ -291,7 +378,6 @@ with st.sidebar:
         step=0.1,
         key="playback_gain",
     )
-    streamlit_shortcuts.add_shortcuts(highpass=_VIS_SHORTCUTS["highpass"])
 
     unsaved = st.session_state["unsaved_count"]
     save_label = f"💾 Save now ({unsaved} unsaved)" if unsaved else "💾 Save now"
@@ -317,8 +403,6 @@ with st.sidebar:
         "← / → Prev / Next  \n"
         f"{label_cheats}  \n"
         f"{s2_block}"
-        "**2** expanded view · **1** auto-contrast · **3** noise red.  \n"
-        "**p** highpass"
     )
 
     st.subheader("Session")
@@ -366,174 +450,160 @@ elif st.session_state["highpass"]:
 else:
     spec_arg, t_markers, t_total = None, None, None
 
-col_spec, col_meta = st.columns([3, 1])
+date_str = recording_date(audio_basename)
 
-with col_spec:
-    fig = render_spectrogram(
-        npy_path=str(row[config.SPEC_PATH_COLUMN]),
-        pred_label=int(row[config.PRED_LABEL_COLUMN]),
-        scale=freq_scale,
-        auto_contrast=st.session_state["auto_contrast"],
-        noise_reduction=st.session_state["noise_reduction"],
-        spec_gain=st.session_state["spec_gain"],
-        highpass=st.session_state["highpass"],
-        expanded_spec=spec_arg,
-        t_markers=t_markers,
-        t_total=t_total,
-        cmap=cmap,
-    )
-    st.pyplot(fig)
+png_bytes = render_spectrogram_png(
+    npy_path=str(row[config.SPEC_PATH_COLUMN]),
+    pred_label=int(row[config.PRED_LABEL_COLUMN]),
+    scale=freq_scale,
+    auto_contrast=st.session_state["auto_contrast"],
+    noise_reduction=st.session_state["noise_reduction"],
+    spec_gain=st.session_state["spec_gain"],
+    highpass=st.session_state["highpass"],
+    expanded_spec=spec_arg,
+    t_markers=t_markers,
+    t_total=t_total,
+    cmap=cmap,
+    date_str=date_str,
+)
+st.image(png_bytes, use_container_width=True)
 
-    # Audio: dual-player if expanded, single otherwise.
-    def _audio_bytes_for(data, sr):
-        processed, out_sr = apply_audio_processing(
-            data,
-            sr,
-            playback_gain=st.session_state["playback_gain"],
-            highpass=st.session_state["highpass"],
-            noise_reduction=st.session_state["noise_reduction"],
+_playback_gain = st.session_state["playback_gain"]
+_hpf = st.session_state["highpass"]
+_nr = st.session_state["noise_reduction"]
+
+if st.session_state["view_expanded"]:
+    col_a2, col_a10 = st.columns(2)
+    with col_a2:
+        st.caption(f"▶ {config.SEGMENT_VIEW_SEC:.0f}-s segment")
+        seg_bytes = get_segment_wav_bytes(
+            audio_basename, start_s, end_s, _playback_gain, _hpf, _nr
         )
-        return encode_wav(processed, out_sr)
-
-    if st.session_state["view_expanded"]:
-        col_a2, col_a10 = st.columns(2)
-        with col_a2:
-            st.caption(f"▶ {config.SEGMENT_VIEW_SEC:.0f}-s segment")
-            d2, sr2 = load_audio_slice(audio_basename, start_s, end_s)
-            if d2 is not None and sr2 is not None:
-                st.audio(_audio_bytes_for(d2, sr2), format="audio/wav")
-            else:
-                st.caption("⚠️ Audio unavailable.")
-        with col_a10:
-            st.caption(f"▶ {config.EXPANDED_VIEW_SEC:.0f}-s window")
-            exp = compute_expanded_spectrogram(audio_basename, start_s, end_s)
-            if exp is not None:
-                st.audio(_audio_bytes_for(exp["audio"], exp["sr"]), format="audio/wav")
-            else:
-                st.caption("⚠️ Audio unavailable.")
-    else:
-        d, sr = load_audio_slice(audio_basename, start_s, end_s)
-        if d is not None and sr is not None:
-            st.audio(_audio_bytes_for(d, sr), format="audio/wav")
+        if seg_bytes is not None:
+            st.audio(seg_bytes, format="audio/wav")
         else:
-            st.caption(f"⚠️ Audio unavailable for `{audio_basename}`")
-
-    st.checkbox("10-second context view (key: 2)", key="view_expanded")
-    streamlit_shortcuts.add_shortcuts(view_expanded=_VIS_SHORTCUTS["view_expanded"])
-
-    date_str = recording_date(audio_basename)
-    if date_str:
-        st.caption(f"📅 Recording date: **{date_str}**")
-
-
-with col_meta:
-    st.subheader("Prediction")
-    pred = int(row[config.PRED_LABEL_COLUMN])
-    pred_label = config.PRED_LABELS.get(pred, "?")
-    st.markdown(f"#### `{pred_label}`")
-
-    for _gt_col, _gt_label, _gt_map in getattr(config, "GROUND_TRUTH_COLUMNS", []):
-        if _gt_col in df.columns:
-            try:
-                _gt_int = int(row[_gt_col])
-            except (TypeError, ValueError):
-                continue
-            _gt_text = _gt_map.get(_gt_int, str(_gt_int))
-            st.markdown(f"**{_gt_label}**: `{_gt_text}`")
-
-    _outcome_str = _row_outcome(row, df)
-    if _outcome_str is not None:
-        _outcome_color = {"TP": "🟢", "TN": "🟢", "FP": "🔴", "FN": "🔴"}.get(
-            _outcome_str, "⚪"
+            st.caption("⚠️ Audio unavailable.")
+    with col_a10:
+        st.caption(f"▶ {config.EXPANDED_VIEW_SEC:.0f}-s window")
+        exp_bytes = get_expanded_wav_bytes(
+            audio_basename, start_s, end_s, _playback_gain, _hpf, _nr
         )
-        st.markdown(f"**Outcome**: {_outcome_color} `{_outcome_str}`")
+        if exp_bytes is not None:
+            st.audio(exp_bytes, format="audio/wav")
+        else:
+            st.caption("⚠️ Audio unavailable.")
+else:
+    seg_bytes = get_segment_wav_bytes(
+        audio_basename, start_s, end_s, _playback_gain, _hpf, _nr
+    )
+    if seg_bytes is not None:
+        st.audio(seg_bytes, format="audio/wav")
+    else:
+        st.caption(f"⚠️ Audio unavailable for `{audio_basename}`")
 
-    current = (str(row[config.MANUAL_VERIF_COLUMN]) or "").strip()
-    st.markdown(f"**Manual verif**: `{current or 'unverified'}`")
-
-    btn_cols = st.columns(2)
-    for i, (label, shortcut) in enumerate(config.MANUAL_VERIF_LABELS):
-        col = btn_cols[i % 2]
-        with col:
-            btn_type = "primary" if label == current else "secondary"
-            if streamlit_shortcuts.shortcut_button(
-                label,
-                shortcut,
-                hint=False,
-                type=btn_type,
-                key=f"lbl_{label}",
-                use_container_width=True,
-            ):
-                df.at[row_idx, config.MANUAL_VERIF_COLUMN] = label
-                st.session_state["unsaved_count"] += 1
-                msg = f"Row {row_idx}: {label}"
-                if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
-                    backup = save_backup(csv_path, df)
-                    st.session_state["last_backup"] = backup.name
-                    st.session_state["unsaved_count"] = 0
-                    msg += f"  · auto-backup → `{backup}`"
-                else:
-                    msg += (
-                        f"  · unsaved {st.session_state['unsaved_count']}/"
-                        f"{config.BACKUP_EVERY_N_SAVES}"
-                    )
-                st.toast(msg, icon="✅")
-                _s2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
-                _s2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
-                _needs_stage2 = (
-                    _s2_col is not None
-                    and _s2_trigger is not None
-                    and label == _s2_trigger
-                    and not str(df.at[row_idx, _s2_col]).strip()
-                )
-                if getattr(config, "AUTO_ADVANCE_ON_LABEL", True) and not _needs_stage2:
-                    new_valid = _compute_valid_idx(
-                        df, only_unverified, pred_filter, prob_range, outcome_filter
-                    )
-                    if row_idx not in new_valid:
-                        next_after = next((i for i in new_valid if i > row_idx), None)
-                        if next_after is not None:
-                            st.session_state["row_idx"] = next_after
-                st.rerun()
-
-    if st.button(
-        "Clear (back to unverified)", use_container_width=True, key="lbl_clear"
+_nav_pad_l, nav_prev, nav_next, nav_count, _nav_pad_r = st.columns([1.5, 1, 1, 2.5, 1.5])
+with nav_prev:
+    if streamlit_shortcuts.shortcut_button(
+        "← Prev",
+        "arrowleft",
+        hint=False,
+        disabled=(pos == 0),
+        use_container_width=True,
+        key="btn_prev",
     ):
-        df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
-        st.session_state["unsaved_count"] += 1
-        st.toast(f"Cleared row {row_idx} (unsaved)", icon="🧹")
+        st.session_state["row_idx"] = valid_idx[pos - 1]
+        # Stash for the next rerun; we can't write _jump_input here because
+        # the widget has already been instantiated up in the sidebar.
+        st.session_state["_pending_jump"] = pos  # new pos = pos-1, display = pos
         st.rerun()
-
-    # ── Stage 2 verification (hierarchical taxonomies) ───────────────────────
-    _stage2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
-    _stage2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
-    _stage2_labels = getattr(config, "MANUAL_VERIF_STAGE2_LABELS", []) or []
-    if (
-        _stage2_col
-        and _stage2_col in df.columns
-        and current == _stage2_trigger
-        and _stage2_labels
+with nav_next:
+    if streamlit_shortcuts.shortcut_button(
+        "Next →",
+        "arrowright",
+        hint=False,
+        disabled=(pos == len(valid_idx) - 1),
+        use_container_width=True,
+        key="btn_next",
     ):
-        st.divider()
-        st.subheader(f"{_stage2_trigger}: subtype")
-        current_s2 = (str(row[_stage2_col]) or "").strip()
-        st.markdown(f"**Subtype**: `{current_s2 or 'unverified'}`")
-        s2_btn_cols = st.columns(2)
-        for i, (label2, shortcut2) in enumerate(_stage2_labels):
-            col2 = s2_btn_cols[i % 2]
-            with col2:
-                btn_type2 = "primary" if label2 == current_s2 else "secondary"
+        st.session_state["row_idx"] = valid_idx[pos + 1]
+        st.session_state["_pending_jump"] = pos + 2
+        st.rerun()
+with nav_count:
+    st.markdown(
+        f"<div style='text-align:left; padding-top:0.4rem; padding-left:0.5rem'>"
+        f"Position <b>{pos + 1}</b> of "
+        f"{len(valid_idx):,} <span style='color:#888'>(row {row_idx + 1} in CSV)</span></div>",
+        unsafe_allow_html=True,
+    )
+
+
+@st.fragment
+def _verification_panel():
+    """Bottom panel (prediction info + verification buttons).
+
+    Wrapped in `@st.fragment` so clicking a label rerenders only this section
+    — the spectrogram, audio bars, sidebar, and `_compute_valid_idx` (60k rows)
+    are NOT re-executed. Only triggers a full-app rerun when `row_idx` changes
+    (auto-advance), since the spectrogram lives outside this fragment.
+    """
+    col_pred, col_btn = st.columns(2)
+
+    with col_pred:
+        st.subheader("Prediction")
+        pred = int(row[config.PRED_LABEL_COLUMN])
+        pred_label = config.PRED_LABELS.get(pred, "?")
+        st.markdown(f"#### `{pred_label}`")
+
+        for _gt_col, _gt_label, _gt_map in getattr(config, "GROUND_TRUTH_COLUMNS", []):
+            if _gt_col in df.columns:
+                try:
+                    _gt_int = int(row[_gt_col])
+                except (TypeError, ValueError):
+                    continue
+                _gt_text = _gt_map.get(_gt_int, str(_gt_int))
+                st.markdown(f"**{_gt_label}**: `{_gt_text}`")
+
+        _outcome_str = _row_outcome(row, df)
+        if _outcome_str is not None:
+            _outcome_color = {"TP": "🟢", "TN": "🟢", "FP": "🔴", "FN": "🔴"}.get(
+                _outcome_str, "⚪"
+            )
+            st.markdown(f"**Outcome**: {_outcome_color} `{_outcome_str}`")
+
+        current = str(df.at[row_idx, config.MANUAL_VERIF_COLUMN]).strip()
+        st.markdown(f"**Manual verif**: `{current or 'unverified'}`")
+
+        if config.PROB_BARS:
+            st.subheader("Probabilities")
+            for col_name, display_label, _ in config.PROB_BARS:
+                if col_name in df.columns:
+                    p = float(row[col_name])
+                    st.progress(min(max(p, 0.0), 1.0), text=f"{display_label}: {p:.3f}")
+
+        st.caption(f"sound file: `{audio_basename}` · {start_s}s–{end_s}s")
+
+    with col_btn:
+        st.subheader("Manual verification")
+        btn_cols = st.columns(2)
+        for i, (label, shortcut) in enumerate(config.MANUAL_VERIF_LABELS):
+            col = btn_cols[i % 2]
+            with col:
+                btn_type = "primary" if label == current else "secondary"
                 if streamlit_shortcuts.shortcut_button(
-                    label2,
-                    shortcut2,
+                    label,
+                    shortcut,
                     hint=False,
-                    type=btn_type2,
-                    key=f"lbl2_{label2}",
+                    type=btn_type,
+                    key=f"lbl_{label}",
                     use_container_width=True,
                 ):
-                    df.at[row_idx, _stage2_col] = label2
+                    df.at[row_idx, config.MANUAL_VERIF_COLUMN] = label
+                    labeled = st.session_state.get("labeled_rows", [])
+                    if row_idx not in labeled:
+                        labeled.append(row_idx)
+                    st.session_state["labeled_rows"] = labeled
                     st.session_state["unsaved_count"] += 1
-                    msg = f"Row {row_idx} subtype: {label2}"
+                    msg = f"Row {row_idx}: {label}"
                     if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
                         backup = save_backup(csv_path, df)
                         st.session_state["last_backup"] = backup.name
@@ -545,13 +615,17 @@ with col_meta:
                             f"{config.BACKUP_EVERY_N_SAVES}"
                         )
                     st.toast(msg, icon="✅")
-                    if getattr(config, "AUTO_ADVANCE_ON_LABEL", True):
+                    _s2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+                    _s2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+                    _needs_stage2 = (
+                        _s2_col is not None
+                        and _s2_trigger is not None
+                        and label == _s2_trigger
+                        and not str(df.at[row_idx, _s2_col]).strip()
+                    )
+                    if getattr(config, "AUTO_ADVANCE_ON_LABEL", True) and not _needs_stage2:
                         new_valid = _compute_valid_idx(
-                            df,
-                            only_unverified,
-                            pred_filter,
-                            prob_range,
-                            outcome_filter,
+                            df, only_unverified, pred_filter, prob_range, outcome_filter
                         )
                         if row_idx not in new_valid:
                             next_after = next(
@@ -559,50 +633,85 @@ with col_meta:
                             )
                             if next_after is not None:
                                 st.session_state["row_idx"] = next_after
-                    st.rerun()
-        if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
-            df.at[row_idx, _stage2_col] = ""
-            st.session_state["unsaved_count"] += 1
-            st.toast(f"Cleared subtype on row {row_idx} (unsaved)", icon="🧹")
-            st.rerun()
+                                st.rerun()  # full app rerun: row changed
+                    # Row unchanged: rerun the fragment so the markdown and
+                    # button colors pick up the new `current` value.
+                    st.rerun(scope="fragment")
 
-    st.subheader("Probabilities")
-    for col_name, display_label, _ in config.PROB_BARS:
-        if col_name in df.columns:
-            p = float(row[col_name])
-            st.progress(min(max(p, 0.0), 1.0), text=f"{display_label}: {p:.3f}")
+        _clear_col = btn_cols[len(config.MANUAL_VERIF_LABELS) % 2]
+        with _clear_col:
+            if st.button("Clear", use_container_width=True, key="lbl_clear"):
+                df.at[row_idx, config.MANUAL_VERIF_COLUMN] = ""
+                st.session_state["unsaved_count"] += 1
+                st.toast(f"Cleared row {row_idx} (unsaved)", icon="🧹")
+                st.rerun(scope="fragment")
 
-    st.caption(f"audio: `{audio_basename}` · {start_s}s–{end_s}s")
+        _stage2_col = getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None)
+        _stage2_trigger = getattr(config, "MANUAL_VERIF_STAGE2_TRIGGER", None)
+        _stage2_labels = getattr(config, "MANUAL_VERIF_STAGE2_LABELS", []) or []
+        if (
+            _stage2_col
+            and _stage2_col in df.columns
+            and current == _stage2_trigger
+            and _stage2_labels
+        ):
+            current_s2 = str(df.at[row_idx, _stage2_col]).strip()
+            st.markdown(
+                f"**{_stage2_trigger} subtype**: `{current_s2 or 'unverified'}`"
+            )
+            s2_btn_cols = st.columns(len(_stage2_labels), gap="small")
+            for i, (label2, shortcut2) in enumerate(_stage2_labels):
+                col2 = s2_btn_cols[i]
+                with col2:
+                    btn_type2 = "primary" if label2 == current_s2 else "secondary"
+                    if streamlit_shortcuts.shortcut_button(
+                        label2,
+                        shortcut2,
+                        hint=False,
+                        type=btn_type2,
+                        key=f"lbl2_{label2}",
+                        use_container_width=True,
+                    ):
+                        df.at[row_idx, _stage2_col] = label2
+                        st.session_state["unsaved_count"] += 1
+                        msg = f"Row {row_idx} subtype: {label2}"
+                        if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
+                            backup = save_backup(csv_path, df)
+                            st.session_state["last_backup"] = backup.name
+                            st.session_state["unsaved_count"] = 0
+                            msg += f"  · auto-backup → `{backup}`"
+                        else:
+                            msg += (
+                                f"  · unsaved {st.session_state['unsaved_count']}/"
+                                f"{config.BACKUP_EVERY_N_SAVES}"
+                            )
+                        st.toast(msg, icon="✅")
+                        if getattr(config, "AUTO_ADVANCE_ON_LABEL", True):
+                            new_valid = _compute_valid_idx(
+                                df,
+                                only_unverified,
+                                pred_filter,
+                                prob_range,
+                                outcome_filter,
+                            )
+                            if row_idx not in new_valid:
+                                next_after = next(
+                                    (i for i in new_valid if i > row_idx), None
+                                )
+                                if next_after is not None:
+                                    st.session_state["row_idx"] = next_after
+                                    st.rerun()  # full app rerun: row changed
+                        # Row unchanged: refresh the fragment to reflect new subtype.
+                        st.rerun(scope="fragment")
+            if st.button("Clear subtype", use_container_width=True, key="lbl2_clear"):
+                df.at[row_idx, _stage2_col] = ""
+                st.session_state["unsaved_count"] += 1
+                st.toast(f"Cleared subtype on row {row_idx} (unsaved)", icon="🧹")
+                st.rerun(scope="fragment")
 
-# ── Bottom navigation ────────────────────────────────────────────────────────
 
-st.divider()
-col_p, col_c, col_n = st.columns([1, 2, 1])
-with col_p:
-    if streamlit_shortcuts.shortcut_button(
-        "← Prev",
-        "arrowleft",
-        hint=False,
-        disabled=(pos == 0),
-        use_container_width=True,
-        key="btn_prev",
-    ):
-        st.session_state["row_idx"] = valid_idx[pos - 1]
-        st.rerun()
-with col_n:
-    if streamlit_shortcuts.shortcut_button(
-        "Next →",
-        "arrowright",
-        hint=False,
-        disabled=(pos == len(valid_idx) - 1),
-        use_container_width=True,
-        key="btn_next",
-    ):
-        st.session_state["row_idx"] = valid_idx[pos + 1]
-        st.rerun()
-with col_c:
-    st.markdown(
-        f"<div style='text-align:center'>Position <b>{pos + 1}</b> of "
-        f"{len(valid_idx):,} <span style='color:#888'>(row {row_idx + 1} in CSV)</span></div>",
-        unsafe_allow_html=True,
-    )
+_verification_panel()
+
+# Persist current visualization/audio settings so the next session opens with
+# the same view. Cheap JSON write; runs once per full page rerun.
+save_preferences()

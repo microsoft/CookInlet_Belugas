@@ -1,15 +1,14 @@
 """CSV load and save helpers for the review UI.
 
-The source CSV is treated as read-only. There are two save destinations:
+The source CSV is treated as read-only.  A single reviewed copy is kept at
 
-  * `frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` —
-    explicit "Save now" snapshots; multiple files accumulate (history).
-  * `frontend/reviews/backups/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv` —
-    auto-saved every N verifications; only the latest is kept (older
-    auto-saves for the same input+user are deleted).
+    frontend/reviews/<csv_stem>_<user>_<YYYYMMDDTHHMMSS>.csv
 
-On launch, `latest_review_path` scans both directories and resumes from
-whichever is newer.
+The timestamp is set when the review file is first created and never changes.
+Both explicit "Save now" clicks and periodic auto-saves overwrite that same
+file, so there is exactly one reviewed version per input CSV + user.
+
+On launch, `latest_review_path` finds that file and resumes from it.
 """
 
 from __future__ import annotations
@@ -68,8 +67,9 @@ def _atomic_write_csv(df: pd.DataFrame, target: Path) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_predictions(path: str) -> pd.DataFrame:
-    """Load a predictions CSV. Adds an empty `manual_verif` column if missing."""
+def _load_predictions_cached(path: str, mtime: float) -> pd.DataFrame:
+    """Cache layer keyed by (path, mtime) so a freshly-saved review file
+    invalidates the cache automatically."""
     df = pd.read_csv(path)
     verif_cols = [config.MANUAL_VERIF_COLUMN]
     if getattr(config, "MANUAL_VERIF_STAGE2_COLUMN", None):
@@ -78,6 +78,16 @@ def load_predictions(path: str) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
+    return df
+
+
+def load_predictions(path: str) -> pd.DataFrame:
+    """Load a predictions CSV. Adds an empty `manual_verif` column if missing."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    df = _load_predictions_cached(path, mtime)
     if len(df) > config.LARGE_ROW_WARN:
         st.warning(
             f"{len(df):,} rows loaded. Consider filtering before review "
@@ -108,7 +118,7 @@ def _matching_files(input_csv: str, dir_: Path) -> list[tuple[str, Path]]:
 
 
 def latest_review_path(input_csv: str) -> Path | None:
-    """Most recent reviewed file (across reviews/ and reviews/backups/)."""
+    """Most recent reviewed file for this input CSV + user."""
     candidates = _matching_files(input_csv, REVIEW_DIR) + _matching_files(
         input_csv, BACKUP_DIR
     )
@@ -118,26 +128,37 @@ def latest_review_path(input_csv: str) -> Path | None:
     return candidates[-1][1]
 
 
-def save_reviews(input_csv: str, df: pd.DataFrame) -> Path:
-    """Save an explicit snapshot to `reviews/`. Accumulates over time."""
+def _get_or_create_review_path(input_csv: str) -> Path:
+    """Return the single review file path for this session.
+
+    If a reviewed file already exists, reuse it.  Otherwise create a new
+    path with the current timestamp.  The path is cached in session_state
+    so every save during the session overwrites the same file.
+    """
+    key = "_review_target_path"
+    existing = st.session_state.get(key)
+    if existing and Path(existing).exists():
+        return Path(existing)
+
+    latest = latest_review_path(input_csv)
+    if latest is not None:
+        st.session_state[key] = str(latest)
+        return latest
+
     target = review_path_for(input_csv)
+    st.session_state[key] = str(target)
+    return target
+
+
+def save_reviews(input_csv: str, df: pd.DataFrame) -> Path:
+    """Save reviewed data, always overwriting the single review file."""
+    target = _get_or_create_review_path(input_csv)
     _atomic_write_csv(df, target)
     return target
 
 
 def save_backup(input_csv: str, df: pd.DataFrame) -> Path:
-    """Auto-save to `reviews/backups/`, keeping at most one file per input+user.
-
-    After writing the new backup, deletes any older backup files for the
-    same input CSV / user so the directory holds a single most-recent
-    auto-save.
-    """
-    target = BACKUP_DIR / f"{Path(input_csv).stem}_{_user()}_{_now_ts()}.csv"
+    """Auto-save, overwriting the same single review file."""
+    target = _get_or_create_review_path(input_csv)
     _atomic_write_csv(df, target)
-    for _ts, p in _matching_files(input_csv, BACKUP_DIR):
-        if p != target:
-            try:
-                p.unlink()
-            except OSError:
-                pass
     return target

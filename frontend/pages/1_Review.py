@@ -113,6 +113,38 @@ csv_path: str = st.session_state["loaded_csv"]
 _rp_str = st.session_state.get("reviewed_path") or ""
 reviewed_path: Path | None = Path(_rp_str) if _rp_str else None
 
+NOTES_COLUMN = "notes"
+if NOTES_COLUMN not in df.columns:
+    df[NOTES_COLUMN] = ""
+
+
+def _flush_notes(idx: int | None) -> None:
+    """Commit the typed value of the notes text_area for `idx` back to df.
+
+    Streamlit syncs widget values to session_state before any callback or
+    rerun, so the typed text is available even if the user clicks Prev/Next
+    without first clicking 'Save notes'. We mirror it into df here so the
+    next save (auto-backup or manual) persists it.
+    """
+    if idx is None:
+        return
+    note_key = f"notes_{idx}"
+    if note_key not in st.session_state:
+        return
+    cached_df = st.session_state.get("df")
+    if cached_df is None or NOTES_COLUMN not in cached_df.columns:
+        return
+    new_val = st.session_state[note_key]
+    current = cached_df.at[idx, NOTES_COLUMN]
+    if pd.isna(current):
+        current = ""
+    if str(new_val) != str(current):
+        cached_df.at[idx, NOTES_COLUMN] = new_val
+        st.session_state["unsaved_count"] = (
+            st.session_state.get("unsaved_count", 0) + 1
+        )
+
+
 init_preferences(DEFAULTS)
 
 
@@ -297,6 +329,7 @@ def _on_find_click():
     ].tolist()
     if hits:
         new_row = int(hits[0])
+        _flush_notes(st.session_state.get("row_idx"))
         st.session_state["row_idx"] = new_row
         cached_valid = st.session_state.get("_valid_idx_cache", [])
         if new_row in cached_valid:
@@ -316,6 +349,7 @@ def _on_jump_change():
     cached = st.session_state.get("_valid_idx_cache", [])
     new_pos = int(new_jump) - 1
     if 0 <= new_pos < len(cached):
+        _flush_notes(st.session_state.get("row_idx"))
         st.session_state["row_idx"] = cached[new_pos]
 
 with st.sidebar:
@@ -383,6 +417,7 @@ with st.sidebar:
     unsaved = st.session_state["unsaved_count"]
     save_label = f"💾 Save now ({unsaved} unsaved)" if unsaved else "💾 Save now"
     if st.button(save_label, use_container_width=True, key="btn_save_now"):
+        _flush_notes(st.session_state.get("row_idx"))
         new_path = save_reviews(csv_path, df)
         st.session_state["reviewed_path"] = str(new_path)
         reviewed_path = new_path
@@ -526,6 +561,21 @@ components.html(
             if (audio.paused) { audio.play(); } else { audio.pause(); }
         });
         w.__spaceBarAudioInit = true;
+
+        // Suppress label shortcuts (o, e, etc.) while typing in inputs,
+        // text_areas, or contentEditable fields. Capture phase + stop
+        // propagation prevents `streamlit_shortcuts`' document-level listener
+        // from ever seeing the keypress, so the character lands in the field.
+        if (!w.__shortcutTypingGuard) {
+            doc.addEventListener('keydown', function(e) {
+                const t = e.target || {};
+                const tag = (t.tagName || '').toLowerCase();
+                if (tag === 'input' || tag === 'textarea' || t.isContentEditable) {
+                    e.stopPropagation();
+                }
+            }, true);
+            w.__shortcutTypingGuard = true;
+        }
     })();
     </script>
     """,
@@ -543,6 +593,7 @@ with nav_prev:
         use_container_width=True,
         key="btn_prev",
     ):
+        _flush_notes(row_idx)
         st.session_state["row_idx"] = valid_idx[pos - 1]
         # Stash for the next rerun; we can't write _jump_input here because
         # the widget has already been instantiated up in the sidebar.
@@ -557,6 +608,7 @@ with nav_next:
         use_container_width=True,
         key="btn_next",
     ):
+        _flush_notes(row_idx)
         st.session_state["row_idx"] = valid_idx[pos + 1]
         st.session_state["_pending_jump"] = pos + 2
         st.rerun()
@@ -698,6 +750,7 @@ def _verification_panel():
                                 (i for i in new_valid if i > row_idx), None
                             )
                             if next_after is not None:
+                                _flush_notes(row_idx)
                                 st.session_state["row_idx"] = next_after
                                 st.rerun()  # full app rerun: row changed
                     # Row unchanged: rerun the fragment so the markdown and
@@ -768,6 +821,7 @@ def _verification_panel():
                                     (i for i in new_valid if i > row_idx), None
                                 )
                                 if next_after is not None:
+                                    _flush_notes(row_idx)
                                     st.session_state["row_idx"] = next_after
                                     st.rerun()  # full app rerun: row changed
                         # Row unchanged: refresh the fragment to reflect new subtype.
@@ -777,6 +831,29 @@ def _verification_panel():
                 st.session_state["unsaved_count"] += 1
                 st.toast(f"Cleared subtype on row {row_idx + 2} (unsaved)", icon="🧹")
                 st.rerun(scope="fragment")
+
+        # Notes: free-text per-row field, keyed by row_idx so each row keeps
+        # its own widget state. The typed value is mirrored into df by
+        # `_flush_notes` whenever the user navigates (Prev/Next/jump/
+        # auto-advance), so saving to disk picks it up even without clicking
+        # "Save notes" first.
+        _existing_note = df.at[row_idx, NOTES_COLUMN]
+        if pd.isna(_existing_note):
+            _existing_note = ""
+        st.text_area(
+            "Notes",
+            value=str(_existing_note),
+            key=f"notes_{row_idx}",
+            placeholder="Free-text notes for this sample…",
+            height=80,
+        )
+        if st.button("💾 Save notes", key="btn_save_notes"):
+            _flush_notes(row_idx)
+            new_path = save_reviews(csv_path, df)
+            st.session_state["reviewed_path"] = str(new_path)
+            st.session_state["unsaved_count"] = 0
+            st.toast(f"Notes saved → `{Path(new_path).name}`", icon="📝")
+            st.rerun(scope="fragment")
 
 
 _verification_panel()

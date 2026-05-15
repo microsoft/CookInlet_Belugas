@@ -91,6 +91,13 @@ HIGHPASS_CUTOFF_HZ: float = 300.0
 EXPANDED_VIEW_SEC: float = 10.0
 PLAYBACK_SAMPLE_RATE: int = 44100
 
+# Stage-2 ecotype abstention threshold: when the calibrated max ecotype
+# probability is below this, the cascade emits `Unassigned_KW` instead of a
+# specific ecotype. Sourced from `data_config.yaml::cascade.threshold` so the
+# Statistics page defaults match what the pipeline actually applies.
+_cascade_cfg = _data_cfg.get("cascade", {}) or {}
+ECOTYPE_ABSTENTION_THRESHOLD: float = float(_cascade_cfg.get("threshold", 0.94))
+
 
 # ── CSV schema ───────────────────────────────────────────────────────────────
 

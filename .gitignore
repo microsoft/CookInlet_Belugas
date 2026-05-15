@@ -9,6 +9,7 @@ data/splits_exp2/
 data/tuxedni_splits/
 checkpoints/
 CLAUDE.md
+.claude/
 
 # Configs: public ones are tracked; experiment-only ones are ignored.
 configs/config_*_exp2.yaml

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from branding import render_logo
 
-st.set_page_config(page_title="SPIRAL · Statistics", page_icon="📊", layout="wide")
+st.set_page_config(page_title="SPIRA · Statistics", page_icon="📊", layout="wide")
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────

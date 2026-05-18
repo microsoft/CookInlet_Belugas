@@ -31,7 +31,7 @@ from branding import render_logo
 from csv_io import latest_review_path, load_predictions
 
 st.set_page_config(
-    page_title="SPIRAL",
+    page_title="SPIRA",
     page_icon="🌀",
     layout="wide",
 )

@@ -140,9 +140,7 @@ def _flush_notes(idx: int | None) -> None:
         current = ""
     if str(new_val) != str(current):
         cached_df.at[idx, NOTES_COLUMN] = new_val
-        st.session_state["unsaved_count"] = (
-            st.session_state.get("unsaved_count", 0) + 1
-        )
+        st.session_state["unsaved_count"] = st.session_state.get("unsaved_count", 0) + 1
 
 
 init_preferences(DEFAULTS)
@@ -169,12 +167,24 @@ def _outcome_predicates(df: pd.DataFrame):
     return pred_pos, truth_pos
 
 
+def _bool_filter(df: pd.DataFrame, col: str, choice: str) -> "pd.Series[bool]":
+    """Tri-state mask for a boolean column. ``choice`` is "Any" / "True" /
+    "False". If the column is missing, return all-True (no filter)."""
+    if choice == "Any" or col not in df.columns:
+        return pd.Series(True, index=df.index)
+    truthy = df[col].astype(str).str.lower().isin(["true", "1", "yes"])
+    return truthy if choice == "True" else ~truthy
+
+
 def _compute_valid_idx(
     df: pd.DataFrame,
     only_unverified: bool,
     pred_filter: list[str],
     prob_range: tuple[float, float] | None,
     outcome_filter: list[str] | None,
+    is_extra_choice: str = "Any",
+    overlap_is_kw_choice: str = "Any",
+    overlaps_csv_event_choice: str = "Any",
     keep_rows: list[int] | None = None,
 ) -> list[int]:
     mask = pd.Series(True, index=df.index)
@@ -214,6 +224,9 @@ def _compute_valid_idx(
             if "FN" in outcome_filter:
                 outcome_mask |= ~pred_pos & truth_pos
             mask &= outcome_mask
+    mask &= _bool_filter(df, "is_extra", is_extra_choice)
+    mask &= _bool_filter(df, "overlap_is_KW", overlap_is_kw_choice)
+    mask &= _bool_filter(df, "overlaps_csv_event", overlaps_csv_event_choice)
     return df.index[mask].tolist()
 
 
@@ -281,8 +294,35 @@ with st.sidebar:
     else:
         outcome_filter = None
 
+    # Boolean annotation-overlap filters (SMRU_extra profile carries these
+    # columns; other profiles silently no-op when columns are absent).
+    _bool_filter_cols = [
+        ("is_extra", "is_extra (cascade KW with no CSV overlap)"),
+        ("overlap_is_KW", "overlap_is_KW (window inside a KW CSV event)"),
+        ("overlaps_csv_event", "overlaps_csv_event (window inside any CSV event)"),
+    ]
+    _bool_filter_choices: dict[str, str] = {}
+    for _col, _label in _bool_filter_cols:
+        if _col in df.columns:
+            _bool_filter_choices[_col] = st.radio(
+                _label,
+                options=["Any", "True", "False"],
+                index=0,
+                horizontal=True,
+                key=f"filter_{_col}",
+            )
+        else:
+            _bool_filter_choices[_col] = "Any"
+
 valid_idx = _compute_valid_idx(
-    df, only_unverified, pred_filter, prob_range, outcome_filter,
+    df,
+    only_unverified,
+    pred_filter,
+    prob_range,
+    outcome_filter,
+    is_extra_choice=_bool_filter_choices["is_extra"],
+    overlap_is_kw_choice=_bool_filter_choices["overlap_is_KW"],
+    overlaps_csv_event_choice=_bool_filter_choices["overlaps_csv_event"],
     keep_rows=st.session_state.get("labeled_rows", []),
 )
 
@@ -334,9 +374,7 @@ def _on_find_click():
         cached_valid = st.session_state.get("_valid_idx_cache", [])
         if new_row in cached_valid:
             st.session_state["_jump_input"] = cached_valid.index(new_row) + 1
-        st.toast(
-            f"Found {len(hits)} match(es); jumped to row {new_row}", icon="🔍"
-        )
+        st.toast(f"Found {len(hits)} match(es); jumped to row {new_row}", icon="🔍")
     else:
         st.toast("No match", icon="⚠️")
 
@@ -351,6 +389,7 @@ def _on_jump_change():
     if 0 <= new_pos < len(cached):
         _flush_notes(st.session_state.get("row_idx"))
         st.session_state["row_idx"] = cached[new_pos]
+
 
 with st.sidebar:
     st.subheader("Search")
@@ -403,9 +442,7 @@ with st.sidebar:
     )
 
     st.subheader("Audio")
-    st.checkbox(
-        f"High-pass {int(config.HIGHPASS_CUTOFF_HZ)} Hz", key="highpass"
-    )
+    st.checkbox(f"High-pass {int(config.HIGHPASS_CUTOFF_HZ)} Hz", key="highpass")
     st.slider(
         "Playback gain",
         min_value=0.1,
@@ -435,11 +472,7 @@ with st.sidebar:
         s2_block = f"_Subtype ({_s2_trigger_cheat}):_  \n{s2_cheats}  \n"
     else:
         s2_block = ""
-    st.caption(
-        "← / → Prev / Next  \n"
-        f"{label_cheats}  \n"
-        f"{s2_block}"
-    )
+    st.caption(f"← / → Prev / Next  \n{label_cheats}  \n{s2_block}")
 
     st.subheader("Session")
     backup_every = config.BACKUP_EVERY_N_SAVES
@@ -583,7 +616,9 @@ components.html(
     width=0,
 )
 
-_nav_pad_l, nav_prev, nav_next, nav_count, _nav_pad_r = st.columns([1.5, 1, 1, 2.5, 1.5])
+_nav_pad_l, nav_prev, nav_next, nav_count, _nav_pad_r = st.columns(
+    [1.5, 1, 1, 2.5, 1.5]
+)
 with nav_prev:
     if streamlit_shortcuts.shortcut_button(
         "← Prev",
@@ -741,9 +776,21 @@ def _verification_panel():
                         and label == _s2_trigger
                         and not str(df.at[row_idx, _s2_col]).strip()
                     )
-                    if getattr(config, "AUTO_ADVANCE_ON_LABEL", True) and not _needs_stage2:
+                    if (
+                        getattr(config, "AUTO_ADVANCE_ON_LABEL", True)
+                        and not _needs_stage2
+                    ):
                         new_valid = _compute_valid_idx(
-                            df, only_unverified, pred_filter, prob_range, outcome_filter
+                            df,
+                            only_unverified,
+                            pred_filter,
+                            prob_range,
+                            outcome_filter,
+                            is_extra_choice=_bool_filter_choices["is_extra"],
+                            overlap_is_kw_choice=_bool_filter_choices["overlap_is_KW"],
+                            overlaps_csv_event_choice=_bool_filter_choices[
+                                "overlaps_csv_event"
+                            ],
                         )
                         if row_idx not in new_valid:
                             next_after = next(
@@ -797,7 +844,10 @@ def _verification_panel():
                         df.at[row_idx, _stage2_col] = label2
                         st.session_state["unsaved_count"] += 1
                         msg = f"Row {row_idx + 2} subtype: {label2}"
-                        if st.session_state["unsaved_count"] >= config.BACKUP_EVERY_N_SAVES:
+                        if (
+                            st.session_state["unsaved_count"]
+                            >= config.BACKUP_EVERY_N_SAVES
+                        ):
                             backup = save_backup(csv_path, df)
                             st.session_state["last_backup"] = backup.name
                             st.session_state["unsaved_count"] = 0
@@ -815,6 +865,13 @@ def _verification_panel():
                                 pred_filter,
                                 prob_range,
                                 outcome_filter,
+                                is_extra_choice=_bool_filter_choices["is_extra"],
+                                overlap_is_kw_choice=_bool_filter_choices[
+                                    "overlap_is_KW"
+                                ],
+                                overlaps_csv_event_choice=_bool_filter_choices[
+                                    "overlaps_csv_event"
+                                ],
                             )
                             if row_idx not in new_valid:
                                 next_after = next(

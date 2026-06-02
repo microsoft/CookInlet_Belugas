@@ -185,6 +185,7 @@ def _compute_valid_idx(
     is_extra_choice: str = "Any",
     overlap_is_kw_choice: str = "Any",
     overlaps_csv_event_choice: str = "Any",
+    pipeline_event_choice: str = "(all)",
     keep_rows: list[int] | None = None,
 ) -> list[int]:
     mask = pd.Series(True, index=df.index)
@@ -227,6 +228,8 @@ def _compute_valid_idx(
     mask &= _bool_filter(df, "is_extra", is_extra_choice)
     mask &= _bool_filter(df, "overlap_is_KW", overlap_is_kw_choice)
     mask &= _bool_filter(df, "overlaps_csv_event", overlaps_csv_event_choice)
+    if pipeline_event_choice != "(all)" and "pipeline_event_id" in df.columns:
+        mask &= df["pipeline_event_id"].astype(str) == pipeline_event_choice
     return df.index[mask].tolist()
 
 
@@ -314,6 +317,35 @@ with st.sidebar:
         else:
             _bool_filter_choices[_col] = "Any"
 
+    # Pipeline-event filter (SMRU_extra/event-aware CSV only; silently
+    # no-ops on profiles whose CSV lacks `pipeline_event_id`).
+    pipeline_event_choice: str = "(all)"
+    if "pipeline_event_id" in df.columns:
+        _ev_ids = sorted(
+            i for i in df["pipeline_event_id"].dropna().astype(str).unique() if i
+        )
+        pipeline_event_choice = st.selectbox(
+            "Pipeline event",
+            options=["(all)"] + _ev_ids,
+            index=0,
+            key="filter_pipeline_event_id",
+            help=(
+                "Restrict to all windows in the selected pipeline event "
+                "(merged with a 30-min gap on per-second KW labels)."
+            ),
+        )
+        if pipeline_event_choice != "(all)":
+            _sub = df[df["pipeline_event_id"].astype(str) == pipeline_event_choice]
+            if not _sub.empty:
+                _ev_meta = _sub.iloc[0]
+                _n_kw = _ev_meta.get("pipeline_event_n_kw_seconds", "?")
+                _smru_kw = _ev_meta.get("pipeline_event_overlap_smru_kw", "")
+                _tags = _ev_meta.get("pipeline_event_smru_tags", "") or "—"
+                st.caption(
+                    f"**{pipeline_event_choice}** · {_n_kw} KW s · "
+                    f"KW-SMRU: `{_smru_kw}` · tags: `{_tags}`"
+                )
+
 valid_idx = _compute_valid_idx(
     df,
     only_unverified,
@@ -323,6 +355,7 @@ valid_idx = _compute_valid_idx(
     is_extra_choice=_bool_filter_choices["is_extra"],
     overlap_is_kw_choice=_bool_filter_choices["overlap_is_KW"],
     overlaps_csv_event_choice=_bool_filter_choices["overlaps_csv_event"],
+    pipeline_event_choice=pipeline_event_choice,
     keep_rows=st.session_state.get("labeled_rows", []),
 )
 
@@ -691,6 +724,30 @@ def _verification_panel():
 
         current = str(df.at[row_idx, config.MANUAL_VERIF_COLUMN]).strip()
         st.markdown(f"**Manual verif**: `{current or 'unverified'}`")
+
+        # Per-second labels (Option B) — three coloured chips for the 3 s
+        # spectrogram window's underlying per-second cascade labels.
+        # Silently no-op on profiles whose CSV lacks the sec*_label columns.
+        _sec_cols = ("sec0_label", "sec1_label", "sec2_label")
+        if all(c in df.columns for c in _sec_cols):
+            _SEC_COLORS = {
+                "NonBio": "#666666",
+                "Bio": "#1a6b1a",
+                "Unassigned_KW": "#5b0080",
+                "SRKW": "#b34700",
+                "TKW": "#1f4e79",
+                "SAR": "#cc0066",
+                "NRKW": "#006666",
+                "OKW": "#8b4513",
+                "_NO_COVERAGE": "#cccccc",
+            }
+            _chips = "".join(
+                f'<span style="background:{_SEC_COLORS.get(str(row[c]), "#888")};'
+                f"color:white;padding:2px 8px;margin-right:4px;border-radius:3px;"
+                f'font-size:0.85em;font-family:monospace">{row[c]}</span>'
+                for c in _sec_cols
+            )
+            st.markdown(f"**Per-second**: {_chips}", unsafe_allow_html=True)
 
         if config.PROB_BARS:
             st.subheader("Probabilities")

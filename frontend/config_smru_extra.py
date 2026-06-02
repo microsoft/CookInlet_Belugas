@@ -11,7 +11,8 @@ Run:
     export ORCA_DATA_CONFIG=/home/v-druizlopez/bioacoustics/orcas_dclde2026/data/data_config.yaml
     export AUDIO_ROOT=/home/v-druizlopez/shared/v-druizlopez/killer_whales_dclde2026/SMRU_extra
     export INFERENCE_DIR=/home/v-druizlopez/bioacoustics/orcas_dclde2026/reports/smru_extra/manual_review
-    export DEFAULT_CSV=$INFERENCE_DIR/review_for_frontend.csv
+    # event-aware CSV: filterable by pipeline_event_id, with sec0/sec1/sec2 labels
+    export DEFAULT_CSV=$INFERENCE_DIR/review_for_frontend_events.csv
     streamlit run frontend/app.py --server.port 8501
 """
 

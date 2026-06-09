@@ -306,6 +306,15 @@ python inference.py --config data/data_config.yaml \
 
 ## Citation
 
-If you use this repository in your research, please cite the associated publication. Citation metadata is also available in `CITATION.cff`.
+If you use this software, please cite the associated paper. Citation metadata is also available in `CITATION.cff`.
 
-Castellote, M., Ruiz, D., Dohdia, R., & Claude. (2026). *Adaptive acoustic monitoring for endangered Cook Inlet beluga whales in complex soundscapes*. Marine Mammal Science.
+```bibtex
+@article{castellote2026adaptive,
+  author = {Castellote, Manuel and Dodhia, Rahul and Ruiz, Daniela and Miao, Zhongqi and Arbelaez, Pablo and Gill, Verena and Polasek, Lori and Lavista Ferres, Juan M.},
+  title = {Adaptive acoustic monitoring for endangered Cook Inlet beluga whales in complex soundscapes},
+  journal = {Marine Mammal Science},
+  year = {2026},
+  doi = {10.1111/mms.70213},
+  url = {https://github.com/microsoft/CookInlet_Belugas}
+}
+```

@@ -38,7 +38,7 @@ The preparation pipeline is controlled by a single YAML config file (`data/data_
 | `stats` | Print dataset statistics (number of sounds, total duration, annotation counts per category). |
 | `windows` | Slide fixed-size windows over each audio file and assign labels based on annotation overlap. Saves a JSON mapping. |
 | `spectrograms` | Compute GPU-accelerated mel spectrograms for every window and save them as `.npy` files. |
-| `splits` | Create grouped train/val/test splits (stratified by label, grouped by sound). It generates `splits_4class/`, `splits_3class/` (positive classes only, remapped), and `splits_binary/` (all positive classes mapped to 1) variants. |
+| `splits` | Create grouped train/val/test splits (stratified by label, grouped by sound). It generates `splits_4class/`, `splits_3class/` (positive classes only, remapped), and `splits_binary/` (whale vs. no-whale). |
 
 ```bash
 # Run the full pipeline
@@ -114,7 +114,7 @@ python train.py --config configs/config_4class_25.yaml \
 
 ### 4. Test Base Models on New Deployment Sites
 
-To evaluate the base models on a new deployment site, run each stage separately and then combine their predictions using `compare_models.py`. The binary model detects whale presence and the 3-class model identifies the species; `compare_models.py` applies the cascade logic and computes final metrics. The `--predict_only` flag skips metric computation and only exports a predictions CSV, which is useful when the test label space differs from the model's label space (e.g., a site with only beluga annotations).
+To evaluate the base models on a new deployment site, run each stage separately and then combine their predictions using `compare_models.py`. The binary model detects whale presence and the 3-class classifier identifies species among positive detections.
 
 #### Tuxedni Channel
 
@@ -174,7 +174,7 @@ python compare_models.py --binary_3class_only \
 
 ### 5. Active Learning Training
 
-The active learning loop adapts the base models to new deployment sites using a small set of annotated examples from the target soundscape. These annotations were obtained from the predictions of the base models on each site (Section 4): high-confidence predictions were directly used as labels, while low-confidence predictions were reviewed and manually annotated. Each model is then fine-tuned from its base checkpoint using this site-specific training data.
+The active learning loop adapts the base models to new deployment sites using a small set of annotated examples from the target soundscape. These annotations were obtained from the predictions of the original models followed by expert review.
 
 #### Tuxedni Channel
 
@@ -270,9 +270,9 @@ python compare_models.py --binary_3class_only \
 
 ### 6. Inference on Unannotated Recordings
 
-Once the models have been fine-tuned to a specific deployment site (Section 5), they can be run on the complete unannotated recordings for that site. The resulting predictions can be analyzed directly to study species occurrence patterns, or a subset of the predictions can be selected and manually verified to serve as training data for a subsequent active learning iteration.
+Once the models have been fine-tuned to a specific deployment site (Section 5), they can be run on the complete unannotated recordings for that site. The resulting predictions can be analyzed directly or used to guide future annotation and model updates.
 
-`inference.py` builds sliding windows over raw audio files, computes mel spectrograms on the fly, runs the loaded checkpoint, and exports per-window predictions as a CSV. It supports binary and multiclass modes.
+`inference.py` builds sliding windows over raw audio files, computes mel spectrograms on the fly, runs the loaded checkpoint, and exports per-window predictions as a CSV. It supports binary and multi-class inference and can operate from raw audio, spectrogram folders, JSON windows, or CSV manifests.
 
 **Audio source options:**
 - **Audio folder**: scans for all audio files, builds windows automatically, saves a `<dataset>_windows.json`
@@ -303,3 +303,9 @@ python inference.py --config data/data_config.yaml \
     --temperature 3 \
     --normalize
 ```
+
+## Citation
+
+If you use this repository in your research, please cite the associated publication. Citation metadata is also available in `CITATION.cff`.
+
+Castellote, M., Ruiz, D., Dohdia, R., & Claude. (2026). *Adaptive acoustic monitoring for endangered Cook Inlet beluga whales in complex soundscapes*. Marine Mammal Science.

@@ -1,0 +1,33 @@
+# Strategy: SPECIES CORRECTION
+# Use when: DETECTION is fine (whale/no-whale precision & recall both good) but
+# the SPECIES are confused (e.g. Beluga called Orca). We fine-tune the 3-class
+# model only, on verified whale windows, emphasising the ones it got wrong.
+name: species_correction
+description: >-
+  Fix species confusion. Fine-tune the 3-CLASS model only, on verified whale
+  windows, emphasising the misclassified ones.
+
+tasks: [3class]
+
+thresholds:
+  binary_ok: 0.85
+  species_metric_min: 0.80
+  min_count: 30
+
+include:
+  3class:
+    # Whale windows the species model got wrong — the corrections that matter.
+    - select: misclassified_species
+      label: from_species   # 1/2/3 -> 0/1/2 (Humpback/Orca/Beluga)
+      oversample: 3
+    # The rest of the verified whale windows, correctly labelled, for balance.
+    - select: true_whale
+      label: from_species
+      oversample: 1
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  group_by: audio
+  seed: 42

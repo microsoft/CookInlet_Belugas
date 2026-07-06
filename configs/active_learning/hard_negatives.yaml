@@ -1,0 +1,35 @@
+# Strategy: HARD NEGATIVES
+# Use when: detection PRECISION is low — noise/other sounds are triggering the
+# binary model into many false whale detections. We teach it what those
+# noise windows look like (label 0) while keeping some true whales so it does
+# not forget them.
+name: hard_negatives
+description: >-
+  Fix false positives from noise. Fine-tune the BINARY model only, emphasising
+  the misfired windows as hard negatives.
+
+tasks: [binary]
+
+# Diagnostic thresholds (only affect the printed suggestion; optional).
+thresholds:
+  precision_min: 0.80
+  min_count: 30
+
+include:
+  binary:
+    # The false alarms: model said whale, you verified no-whale. Oversample so
+    # the correction carries weight.
+    - select: false_positive
+      label: 0
+      oversample: 3
+    # A sample of genuine whales so the model keeps its detections.
+    - select: true_whale
+      label: 1
+      oversample: 1
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  group_by: audio   # keep windows from one recording in a single split
+  seed: 42

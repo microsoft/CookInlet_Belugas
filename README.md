@@ -176,6 +176,8 @@ python compare_models.py --binary_3class_only \
 
 The active learning loop adapts the base models to new deployment sites using a small set of annotated examples from the target soundscape. These annotations were obtained from the predictions of the original models followed by expert review.
 
+> **New to this / adapting to your own site?** See the step-by-step [Active Learning Guide](docs/active_learning_guide.md) in `docs/`. It is written for analysts who are not machine-learning experts and walks through turning your verified detections into training files (via `build_finetune_sets.py` and the presets in `configs/active_learning/`), fine-tuning, and measuring the improvement. The commands below reproduce the specific Tuxedni Channel and Johnson River experiments from the paper.
+
 #### Tuxedni Channel
 
 Fine-tune the binary detector and species classifier on Tuxedni data, then evaluate the adapted cascade:

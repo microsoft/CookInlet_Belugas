@@ -18,7 +18,8 @@ The models work in two stages, run one after the other ("cascade"):
 2. **3-class model** — for windows that contain a whale, decides the *species*
    (Humpback, Orca, or **Beluga**).
 
-You will fine-tune **both** models, because both benefit from local examples.
+Depending on what's going wrong at your site, you'll fine-tune **one or both** of these
+models — the helper script in Step 1 works out which from your corrections.
 
 The full cycle looks like this, and you repeat it as you gather more verified data:
 
@@ -35,7 +36,20 @@ improved models
 ## Before you start, you need three things
 
 1. **Your verified CSV** — the inference output CSV *after* you have gone through it and
-   corrected the labels by hand (kept the correct ones, fixed the wrong ones).
+   corrected the labels by hand. Concretely: **keep** the model's original prediction
+   columns (`pred_label`, or `pred_label_binary` / `pred_label_3class`) and **add one new
+   column, `verified_label`**, holding the *correct* class for each window as a number:
+
+   | `verified_label` | meaning |
+   |------------------|---------|
+   | `0` | No Whale |
+   | `1` | Humpback |
+   | `2` | Orca |
+   | `3` | **Beluga** |
+
+   This is the same `0/1/2/3` scheme the inference cascade uses for `pred_label`. Keeping the
+   original predictions is what lets the helper script tell *false alarms* from *misses* and
+   suggest the right fix.
 2. **The spectrogram files** (`.npy`) for those windows. These were already created for you
    when you ran inference on the raw audio — look in
    `inference/<your_dataset>/spectrograms/`.
@@ -59,57 +73,99 @@ Split your verified events into **three** groups:
 | **Validation** ("val") | ~15% | Checked automatically *during* fine-tuning to pick the best version and stop at the right time. You do not look at this yourself. |
 | **Test** | ~15% | **Locked away.** Never used in training. Only used at the very end to measure the real improvement. |
 
-Practical tips for splitting well:
-- Split **randomly**, but keep a mix of species and of whale/no-whale in each group.
-- If several windows come from the **same continuous recording / same call**, try to keep
-  them together in the *same* group. Otherwise the model can "cheat" by memorising a sound
-  that appears in both train and test.
-- Keep the test group **untouched** across rounds if you can, so improvements are comparable
-  over time.
+**Good news: you don't split the data by hand.** The helper script in Step 1
+(`build_finetune_sets.py`) does the split for you, and handles the tricky parts:
+- It splits into roughly **70 / 15 / 15** train / val / test.
+- It keeps every window from the **same recording together** in one split (it groups by the
+  `audio` column), so the model can't "cheat" by seeing the same call in both train and test.
+- It uses a fixed random seed, so the split is reproducible from one round to the next.
+
+You still need to *understand* why the test set matters — mainly so you don't delete it or
+quietly reuse it for training — but the mechanics are handled for you.
 
 ---
 
-## Step 1 — Put your CSV into the format the trainer expects
+## Step 1 — Turn your verified CSV into training files (`build_finetune_sets.py`)
 
-The training script reads two columns from each CSV:
+You do **not** build the split files by hand. The helper script
+[`build_finetune_sets.py`](../build_finetune_sets.py) does it for you: it reads your one
+verified CSV (the one with the `verified_label` column you added) and writes the
+train/val/test files in the exact format the trainer expects — columns `spec_name` and
+`label`.
 
-- **`spec_name`** — the path to that window's `.npy` spectrogram file
-  (you already have these from inference).
-- **`label`** — the *verified* class, written as a number:
+### 1a. Diagnose first — where is the model failing?
 
-  **For the binary CSVs:**
-  | label | meaning |
-  |-------|---------|
-  | `0` | no whale |
-  | `1` | whale (any species) |
+Before building anything, ask the script what's wrong with this batch. It compares the
+model's predictions against your `verified_label`, prints detection precision/recall and
+per-species confusion, and suggests a strategy:
 
-  **For the 3-class CSVs** (only include windows that *do* contain a whale):
-  | label | meaning |
-  |-------|---------|
-  | `0` | Humpback |
-  | `1` | Orca |
-  | `2` | **Beluga** |
+```bash
+python build_finetune_sets.py --verified_csv verified.csv --diagnose_only
+```
 
-So from your one verified CSV you will produce **six** files:
+### 1b. Pick a strategy
+
+Different problems need different training sets, so instead of one fixed recipe the script
+takes a **strategy** preset — a small YAML in
+[`configs/active_learning/`](../configs/active_learning/). The diagnostic above suggests
+one, but the choice is yours:
+
+| Strategy | Use when… | Fine-tunes | Files it writes |
+|----------|-----------|------------|-----------------|
+| `hard_negatives` | Too many **false alarms** — noise called "whale" (low precision). | binary only | 3 × `*_binary.csv` |
+| `add_positives` | **Missing real whales** — whales called "no whale" (low recall). | binary only | 3 × `*_binary.csv` |
+| `species_correction` | Detection is fine, but **species are confused** (e.g. Beluga called Orca). | 3-class only | 3 × `*_3class.csv` |
+| `balanced_refresh` | **General drift** at a new site, no single dominant problem. | both models | all six |
+
+### 1c. Build the split files
+
+```bash
+python build_finetune_sets.py \
+    --verified_csv verified.csv \
+    --strategy hard_negatives \
+    --output_dir data/cookinlet_splits
+```
+
+Depending on the strategy, this writes **three or six** files into
+`data/cookinlet_splits/`:
 
 ```
 data/cookinlet_splits/
-├── train_binary.csv     val_binary.csv     test_binary.csv
-└── train_3class.csv     val_3class.csv     test_3class.csv
+├── train_binary.csv   val_binary.csv   test_binary.csv     (binary strategies + balanced_refresh)
+└── train_3class.csv   val_3class.csv   test_3class.csv     (species_correction + balanced_refresh)
 ```
 
-> The binary files contain *all* windows (whale and no-whale).
-> The 3-class files contain *only* the whale windows, labelled by species.
+For reference, this is the `label` scheme the script writes into those files. **You don't
+write these yourself** — the script derives them from your `verified_label`:
 
-*(A helper script can generate these six files from your verified CSV automatically —
-ask the developer, or see "Getting help" below.)*
+**Binary files** — contain *all* windows:
+| label | meaning |
+|-------|---------|
+| `0` | no whale |
+| `1` | whale (any species) |
+
+**3-class files** — contain *only* whale windows, labelled by species:
+| label | meaning |
+|-------|---------|
+| `0` | Humpback |
+| `1` | Orca |
+| `2` | **Beluga** |
+
+> Mind the two schemes: your **input** `verified_label` uses `0/1/2/3` (0=No Whale … 3=Beluga),
+> and the script converts that into the binary `0/1` and 3-class `0/1/2` files above.
+> (In the 3-class files, Beluga is `2`, not `3`.)
 
 ---
 
-## Step 2 — Fine-tune the two models
+## Step 2 — Fine-tune the model(s)
 
 Run these one at a time. Each one starts from the base checkpoint and saves an improved,
 site-adapted checkpoint. On a machine without a GPU this will be slow but still works.
+
+**Only run the command for the model your strategy actually produced files for:**
+`hard_negatives` and `add_positives` make **binary** files only, `species_correction` makes
+**3-class** files only, and `balanced_refresh` makes both — so with `balanced_refresh` you
+run both commands below.
 
 ```bash
 # Fine-tune the binary (whale / no-whale) model
@@ -213,5 +269,8 @@ at your site.
   [`README.md`](../README.md).
 - The trained checkpoints and the annotation labels are published on Zenodo:
   <https://zenodo.org/records/19490105>.
-- If the "format your CSV into six split files" step is unclear, ask the developer for the
-  conversion helper script — that step is the only part that isn't a single command.
+- The "turn my verified CSV into training files" step is done by
+  [`build_finetune_sets.py`](../build_finetune_sets.py) (Step 1). Run it with
+  `--diagnose_only` first to see what it recommends. The strategy presets it uses live in
+  [`configs/active_learning/`](../configs/active_learning/) and are plain YAML you can copy
+  and tweak for your own situation.

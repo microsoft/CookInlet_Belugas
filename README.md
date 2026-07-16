@@ -23,9 +23,27 @@ Photo: M. Castellote, beluga whales off Fire Island, Cook Inlet, Alaska.
 
 ### 1. Installation
 
+Use **Python 3.11 or 3.12** (the pinned dependencies have no wheels for 3.13+).
+Create an isolated environment and install:
+
 ```bash
+python3.11 -m venv venv
+source venv/bin/activate          # Windows: .\venv\Scripts\Activate.ps1
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+**GPU (NVIDIA):** on **Windows/macOS** the default PyPI PyTorch wheel is CPU-only.
+For CUDA, install the torch packages from the PyTorch index (match the CUDA tag to
+your driver):
+
+```bash
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu126
+```
+
+On **Linux** the default PyPI wheel already includes CUDA. Verify with
+`python -c "import torch; print(torch.cuda.is_available())"`.
 
 ### 2. Prepare Dataset
 
@@ -111,6 +129,31 @@ python train.py --config configs/config_4class_25.yaml \
     --val_csv data/splits_4class_25/val_split.csv \
     --test_csv data/splits_4class_25/test_split.csv
 ```
+
+### Pretrained checkpoints (to skip training)
+
+Training (Section 3) writes checkpoints to `checkpoints/<name>/best.ckpt`. If you
+only want to **run** the models, download the trained base checkpoints from Zenodo
+instead of training them:
+
+- **Zenodo:** <https://zenodo.org/records/19490105> (trained checkpoints + labels)
+
+Place them so the commands below resolve:
+
+```
+checkpoints/binary/best.ckpt   # Stage 1: whale / no-whale
+checkpoints/3class/best.ckpt   # Stage 2: Humpback / Orca / Beluga
+```
+
+> **What you provide vs. what's generated.** `checkpoints/`, the spectrogram
+> `.npy` folders, and `data/*_splits/` are **not** shipped in the repo:
+> checkpoints come from Zenodo (or your own training), and the spectrograms and
+> splits are produced by `prepare_dataset.py` / `train.py`. Paths like
+> `data/tuxedni_splits/…` in Sections 4–6 are the paper's deployment-site data
+> (available on request) — you don't need them to run on your own audio.
+
+For a plain-language, end-to-end guide to running inference on your own `.wav`
+files, see **[MANUAL.md](MANUAL.md)**.
 
 ### 4. Test Base Models on New Deployment Sites
 

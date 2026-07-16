@@ -130,6 +130,48 @@ paper's setup, and what you almost always want) you have two options: the
 **one-command wrapper** (raw audio → cascade), or **cascade mode** directly if
 you already have spectrograms.
 
+### How to think about the modes — two independent choices
+
+Before the commands, it helps to see that "how you run inference" is really **two
+separate questions**, not one. Getting these straight explains why `run_cascade.py`
+exists.
+
+> **There are no spectrogram _images_ here.** Mel spectrograms are always **`.npy`
+> numeric arrays** (float32), computed on GPU and fed straight to the models —
+> never PNG/JPG files. (The older 2019 pipeline made image files; this one does
+> not.) So the only question about spectrograms is *compute them now* vs *reuse
+> saved `.npy`* — same data either way.
+
+**Axis A — how many models run:**
+
+| Mode | Turned on by | What runs |
+|------|--------------|-----------|
+| **Cascade** | `--spectrograms_dir` + `--checkpoint_binary` + `--checkpoint_3class` | Stage 1 (whale/no-whale) **and** Stage 2 (species) → full `pred_label` |
+| **Single-model** | `--audios_source` + `--checkpoint` | **One** model only (just the binary detector, or just the 3-class classifier) |
+
+**Axis B — where the spectrograms come from:**
+
+| Source | Behaviour |
+|--------|-----------|
+| Raw audio (folder or `.wav`) | Builds windows, **computes `.npy` on the fly and saves** them to `inference/<dataset>/spectrograms/` |
+| Pre-computed `.npy` folder | **Loads directly, skips computation** |
+| `.json` windows / `.csv` manifest | Loads a window list from a previous run |
+
+**The one asymmetry that matters:** single-model mode *can* start from raw audio
+(it computes the `.npy` itself), but **cascade mode cannot** — it only reads a
+folder of pre-computed `.npy` (`--spectrograms_dir`) and has no audio-loading path.
+That gap is exactly what `run_cascade.py` fills: compute `.npy` from audio, then
+hand off to cascade.
+
+```
+raw .wav ──► [compute + save .npy] ──►  .npy folder ──► model(s) ──► CSV
+             (single-model mode, or          │
+              run_cascade.py step 1)          └──► reuse existing .npy
+                                                   (cascade mode / --spectrograms_path)
+```
+
+The paths below are concrete recipes built from these two axes.
+
 ### The easy path: one command from raw audio (`run_cascade.py`)
 
 `run_cascade.py` is a thin wrapper around `inference.py`: it builds the mel

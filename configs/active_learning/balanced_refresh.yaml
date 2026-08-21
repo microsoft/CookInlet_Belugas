@@ -1,0 +1,35 @@
+# Strategy: BALANCED REFRESH
+# Use when: no single failure mode dominates — detection and species are all a
+# bit off (general drift at a new site). Fine-tune BOTH models on a
+# straightforward, balanced sample of everything you verified.
+name: balanced_refresh
+description: >-
+  General site adaptation. Fine-tune BOTH the binary and 3-class models on a
+  balanced sample of all verified windows, without special emphasis.
+
+tasks: [binary, 3class]
+
+thresholds:
+  precision_min: 0.80
+  recall_min: 0.80
+  min_count: 30
+
+include:
+  binary:
+    # All verified windows, labelled whale / no-whale.
+    - select: all
+      label: from_binary
+      oversample: 1
+  3class:
+    # All verified whale windows, labelled by species (no-whale rows are
+    # skipped automatically by from_species).
+    - select: true_whale
+      label: from_species
+      oversample: 1
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  group_by: audio
+  seed: 42

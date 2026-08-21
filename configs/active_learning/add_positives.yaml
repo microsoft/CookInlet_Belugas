@@ -1,0 +1,32 @@
+# Strategy: ADD POSITIVES
+# Use when: detection RECALL is low — the binary model is MISSING real whales
+# (false negatives). We emphasise the missed whale windows so it learns to
+# catch them, while keeping some verified no-whale windows for balance.
+name: add_positives
+description: >-
+  Recover missed whales. Fine-tune the BINARY model only, emphasising the
+  false-negative windows.
+
+tasks: [binary]
+
+thresholds:
+  recall_min: 0.80
+  min_count: 30
+
+include:
+  binary:
+    # The misses: real whale that the model called no-whale. Oversample.
+    - select: false_negative
+      label: 1
+      oversample: 3
+    # A sample of correct no-whale windows so precision does not collapse.
+    - select: true_no_whale
+      label: 0
+      oversample: 1
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  group_by: audio
+  seed: 42

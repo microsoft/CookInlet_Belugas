@@ -459,7 +459,8 @@ def train(
     else:
         # strict=False tolerates extra buffers like criterion.pos_weight added
         # when the loss was overridden (BCEWithLogitsLoss(pos_weight=...)).
-        model = ResNetClassifier.load_from_checkpoint(ckpt_path, strict=False)
+        # GHSA-75m9-98v2-hjpm: restrict checkpoint deserialization until a confirmed patch is available.
+        model = ResNetClassifier.load_from_checkpoint(ckpt_path, strict=False, weights_only=True)
 
         temperature = getattr(t, "temperature", 1.0)
         if temperature != 1.0:

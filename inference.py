@@ -93,7 +93,6 @@ from torch.utils.data import DataLoader
 # Import from PytorchWildlife core library
 from PytorchWildlife.models.bioacoustics import (
     ResNetClassifier,
-    load_model_from_checkpoint,
 )
 from PytorchWildlife.data.bioacoustics.bioacoustics_datasets import (
     BioacousticsInferenceDataset,
@@ -105,6 +104,14 @@ from PytorchWildlife.data.bioacoustics.bioacoustics_configs import load_config
 from PytorchWildlife.data.bioacoustics.bioacoustics_spectrograms import (
     compute_mel_spectrograms_gpu,
 )
+
+
+def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> ResNetClassifier:
+    # GHSA-75m9-98v2-hjpm: restrict checkpoint deserialization until a confirmed patch is available.
+    model = ResNetClassifier.load_from_checkpoint(checkpoint_path, weights_only=True)
+    model.eval()
+    model.freeze()
+    return model.to(device)
 
 
 def build_dataframe_from_spectrograms_dir(
